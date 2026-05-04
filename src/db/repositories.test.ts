@@ -74,7 +74,7 @@ describe('Repositories', () => {
     db.close();
     try {
       unlinkSync(dbPath);
-    } catch {}
+    } catch { /* ignore */ }
   });
 
   describe('SessionRepository', () => {

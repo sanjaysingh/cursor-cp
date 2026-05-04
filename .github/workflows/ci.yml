@@ -116,7 +116,7 @@ jobs:
           sleep 3
 
           # Test health endpoint
-          curl -f http://localhost:9999/api/health || (echo "Health check failed" && kill $SERVER_PID && exit 1)
+          curl -f http://localhost:9999/health || (echo "Health check failed" && kill $SERVER_PID && exit 1)
 
           # Cleanup
           kill $SERVER_PID || true

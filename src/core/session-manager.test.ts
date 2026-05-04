@@ -2,7 +2,7 @@
  * Tests for SessionManager
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { resolve } from 'path';
 import { tmpdir } from 'os';
@@ -16,7 +16,6 @@ import {
   ParticipantRepository,
   SettingsRepository,
 } from '../db/repositories.js';
-import type { Session } from '../models/types.js';
 
 describe('SessionManager', () => {
   let db: Database.Database;
@@ -90,12 +89,12 @@ describe('SessionManager', () => {
     // Clean up all sessions before closing DB
     try {
       await sessionManager.closeAllSessions();
-    } catch {}
+    } catch { /* ignore */ }
 
     db.close();
     try {
       unlinkSync(dbPath);
-    } catch {}
+    } catch { /* ignore */ }
   });
 
   describe('createSession', () => {

@@ -112,7 +112,7 @@ export async function runSetupWizard(dataDir: string): Promise<void> {
     const configContent = generateConfigFile({
       enableTelegram,
       enableWeb,
-      port: parseInt(port, 10),
+      port,
       host,
       workspaceRoot,
       defaultModel,
@@ -164,7 +164,16 @@ function generateEnvFile(answers: WizardAnswers): string {
   return lines.join('\n');
 }
 
-function generateConfigFile(answers: WizardAnswers): string {
+interface ConfigFileAnswers {
+  enableTelegram: boolean;
+  enableWeb: boolean;
+  port: number;
+  host: string;
+  workspaceRoot: string;
+  defaultModel: string;
+}
+
+function generateConfigFile(answers: ConfigFileAnswers): string {
   return `# Cursor Control Plane Configuration
 # Generated on ${new Date().toISOString()}
 
@@ -184,7 +193,7 @@ channels:
 # Server settings
 server:
   host: ${answers.host}
-  port: ${parseInt(answers.port, 10)}
+  port: ${answers.port}
 
 # SDK settings
 sdk:
@@ -226,6 +235,10 @@ export function checkNeedsSetup(dataDir: string): boolean {
 import { readFileSync } from 'fs';
 
 export async function ensureSetup(dataDir: string): Promise<void> {
+  // Skip setup wizard in CI environments - use environment variables instead
+  if (process.env.CI === 'true') {
+    return;
+  }
   if (checkNeedsSetup(dataDir)) {
     await runSetupWizard(dataDir);
   }

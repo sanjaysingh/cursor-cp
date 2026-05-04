@@ -18,6 +18,7 @@ import {
 import { buildRepoPicker } from '../core/repo-picker.js';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { readdir } from 'fs/promises';
 import { mkdir } from 'fs/promises';
 
 const WEB_CHANNEL_KEY = 'web:default';
@@ -25,7 +26,7 @@ const WEB_CHANNEL_KEY = 'web:default';
 interface RoutesOptions {
   sessionManager: SessionManager;
   agentService: AgentService;
-  webChannel: WebChannel;
+  webChannel?: WebChannel;
   config: AppConfig;
 }
 
@@ -259,6 +260,9 @@ export async function registerRoutes(
     const { sessionId } = request.params as { sessionId: string };
     const body = AnswerQuestionRequest.parse(request.body);
 
+    if (!webChannel) {
+      return reply.status(503).send({ error: 'Web channel not enabled' });
+    }
     const ok = webChannel.submitAnswer(sessionId, body.answer, WEB_CHANNEL_KEY);
     if (!ok) {
       return reply.status(404).send({ error: 'No pending question for this session' });
@@ -304,6 +308,9 @@ export async function registerRoutes(
     const { sessionId } = request.params as { sessionId: string };
     const body = AnswerQuestionRequest.parse(request.body);
 
+    if (!webChannel) {
+      return reply.status(503).send({ error: 'Web channel not enabled' });
+    }
     const ok = webChannel.submitAnswer(sessionId, body.answer, WEB_CHANNEL_KEY);
     if (!ok) {
       return reply.status(404).send({ error: 'No pending question' });
