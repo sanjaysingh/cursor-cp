@@ -99,11 +99,13 @@ export class AgentService {
         switch (event.type) {
           case 'assistant': {
             // Regular text output from agent
-            for (const block of event.message.content) {
-              if (block.type === 'text' && block.text) {
-                const chunk: StreamChunk = { text: block.text, type: 'text' };
-                session.outputBuffer += block.text;
-                this.onStreamCallback?.(sessionId, chunk);
+            if (event.message?.content) {
+              for (const block of event.message.content) {
+                if (block.type === 'text' && block.text) {
+                  const chunk: StreamChunk = { text: block.text, type: 'text' };
+                  session.outputBuffer += block.text;
+                  this.onStreamCallback?.(sessionId, chunk);
+                }
               }
             }
             break;

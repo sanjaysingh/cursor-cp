@@ -18,6 +18,7 @@
     "@fastify/websocket": "^10.0.1",
     "better-sqlite3": "^11.3.0",
     "dotenv": "^16.4.5",
+    "execa": "^9.3.1",
     "fastify": "^4.28.1",
     "js-yaml": "^4.1.0",
     "telegraf": "^4.16.3",

@@ -3,8 +3,8 @@
  * Deduplicates local and GitHub repositories with intelligent matching
  */
 
-import { resolve, basename } from 'path';
-import { readdir, stat } from 'fs/promises';
+import { resolve } from 'path';
+import { readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import type { AppConfig } from '../models/types.js';
 
@@ -153,10 +153,6 @@ export class RepoPicker {
         if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
 
         const path = resolve(this.options.workspaceRoot, entry.name);
-
-        // Check if it's a git repo
-        const gitPath = resolve(path, '.git');
-        const isGitRepo = existsSync(gitPath);
 
         entries.push({
           name: entry.name,

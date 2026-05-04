@@ -16,8 +16,7 @@ import {
   CreateRunRequest,
 } from '../models/schemas.js';
 import { buildRepoPicker } from '../core/repo-picker.js';
-import { resolve, join } from 'path';
-import { homedir } from 'os';
+import { join } from 'path';
 import { existsSync } from 'fs';
 import { mkdir } from 'fs/promises';
 

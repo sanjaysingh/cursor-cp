@@ -5,10 +5,10 @@
 import { Telegraf, Markup, Context } from 'telegraf';
 import type { Update } from 'telegraf/types';
 import type { Channel } from './base.js';
-import type { MessageTarget, IncomingMessage } from '../models/types.js';
+import type { MessageTarget } from '../models/types.js';
 import { EventBus } from '../core/events.js';
 import type { SessionManager } from '../core/session-manager.js';
-import { markdownToTelegram, splitForTelegram } from '../format/telegram-format.js';
+import { splitForTelegram } from '../format/telegram-format.js';
 import { createHash } from 'crypto';
 
 interface PendingQuestion {
@@ -16,8 +16,6 @@ interface PendingQuestion {
   options: string[];
   sessionId: string;
 }
-
-interface SessionInfo {
   id: string;
   title: string;
   repoName: string;
@@ -93,7 +91,7 @@ export class TelegramChannel implements Channel {
 
     // Sessions list
     this.bot.command('sessions', async (ctx) => {
-      const chatId = String(ctx.chat?.id);
+      const _chatId = String(ctx.chat?.id);
       const sessions = this.sessionManager.listAllSessions(false);
 
       if (sessions.length === 0) {
@@ -114,7 +112,7 @@ export class TelegramChannel implements Channel {
     // Models list
     this.bot.command('models', async (ctx) => {
       const chatId = String(ctx.chat?.id);
-      const models = await this.sessionManager.agentService.listAvailableModels();
+      const models = await this.sessionManager.getAgentService().listAvailableModels();
 
       if (models.length === 0) {
         await ctx.reply('No models available.');
@@ -253,13 +251,16 @@ export class TelegramChannel implements Channel {
     // Handle model selection callback
     this.bot.action(/model:(\d+)/, async (ctx) => {
       const index = parseInt(ctx.match[1], 10);
-      const chatId = String(ctx.chat?.id);
-      const models = this.modelIds.get(chatId);
+      const _chatId = String(ctx.chat?.id);
+      const models = this.modelIds.get(_chatId);
 
-      if (models && models[index]) {
-        this.sessionManager.setDefaultModel(models[index]);
-        await ctx.answerCbQuery(`Default model set to ${models[index]}`);
-        await ctx.reply(`✅ Default model set to: ${models[index]}`);
+      if (models) {
+        const model = models[index];
+        if (model) {
+          this.sessionManager.setDefaultModel(model);
+          await ctx.answerCbQuery(`Default model set to ${model}`);
+          await ctx.reply(`✅ Default model set to: ${model}`);
+        }
       }
     });
 
@@ -399,15 +400,15 @@ export class TelegramChannel implements Channel {
     for (const chunk of chunks) {
       if (chunk.entities && chunk.entities.length > 0) {
         // Send with entities for rich formatting
-        await this.bot.telegram.sendMessage(conversationId, chunk.text, {
-          entities: chunk.entities.map((e) => ({
-            type: e.type,
-            offset: e.offset,
-            length: e.length,
-            url: e.url,
-            language: e.language,
-          })),
-        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const entities: any[] = chunk.entities.map((e) => ({
+          type: e.type,
+          offset: e.offset,
+          length: e.length,
+          ...(e.url && { url: e.url }),
+          ...(e.language && { language: e.language }),
+        }));
+        await this.bot.telegram.sendMessage(conversationId, chunk.text, { entities });
       } else {
         // Plain text - escape markdown characters
         const escaped = chunk.text.replace(/[_*[`]/g, '\\$&');
@@ -438,7 +439,7 @@ export class TelegramChannel implements Channel {
       });
 
       // Set up one-time handler for this question
-      const handler = this.bot.action(new RegExp(`q:${token}:(\\d+)`), async (ctx) => {
+      this.bot.action(new RegExp(`q:${token}:(\\d+)`), async (ctx) => {
         const index = parseInt(ctx.match[1], 10);
         const pending = this.pendingQuestions.get(token);
 

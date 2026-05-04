@@ -5,11 +5,11 @@
 
 import { randomUUID } from 'crypto';
 import { basename } from 'path';
-import type { Session, AgentActivity, IncomingMessage, MessageTarget } from '../models/types.js';
+import type { Session, MessageTarget } from '../models/types.js';
 import type { SessionRepository, MessageRepository, ParticipantRepository, SettingsRepository } from '../db/repositories.js';
 import { AgentService } from './agent-service.js';
 import { EventBus } from './events.js';
-import type { Channel } from '../channels/base.js';
+import type { Channel, ChannelRegistry } from '../channels/base.js';
 
 export class SessionLimitError extends Error {
   constructor(max: number) {
@@ -27,6 +27,7 @@ interface SessionManagerOptions {
   };
   agentService: AgentService;
   eventBus: EventBus;
+  registry: ChannelRegistry;
   maxSessions: number;
   defaultModel: string;
 }
@@ -42,6 +43,7 @@ export class SessionManager {
   private settings: SettingsRepository;
   private agentService: AgentService;
   private eventBus: EventBus;
+  private registry: ChannelRegistry;
   private maxSessions: number;
   private defaultModel: string;
   private managedSessions: Map<string, ManagedSession> = new Map();
@@ -53,6 +55,7 @@ export class SessionManager {
     this.settings = options.repositories.settings;
     this.agentService = options.agentService;
     this.eventBus = options.eventBus;
+    this.registry = options.registry;
     this.maxSessions = options.maxSessions;
     this.defaultModel = options.defaultModel;
 
@@ -449,6 +452,10 @@ export class SessionManager {
     } else {
       this.settings.delete('default_model');
     }
+  }
+
+  getAgentService(): AgentService {
+    return this.agentService;
   }
 
   private toPublicSession(session: Session): Record<string, unknown> {

@@ -5,7 +5,7 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
 import { homedir } from 'os';
-import { execSync, spawn } from 'child_process';
+import { execSync } from 'child_process';
 
 const DATA_DIR = resolve(homedir(), '.config', 'cursor-cp');
 const SERVICE_MARKER = resolve(DATA_DIR, 'service.json');

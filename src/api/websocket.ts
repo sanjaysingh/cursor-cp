@@ -3,7 +3,6 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import type { SocketStream } from '@fastify/websocket';
 import type { EventBus } from '../core/events.js';
 import type { AppEvent } from '../models/types.js';
 
@@ -11,7 +10,7 @@ export function registerWebSocket(
   fastify: FastifyInstance,
   eventBus: EventBus
 ): void {
-  fastify.get('/ws', { websocket: true }, (connection: SocketStream, req) => {
+  fastify.get('/ws', { websocket: true }, (connection, _req) => {
     const socket = connection.socket;
 
     // Handler for events

@@ -72,9 +72,20 @@ async function main() {
   // Initialize channels
   const channelRegistry = new ChannelRegistryImpl();
 
+  // Initialize session manager first (needed by channels)
+  const sessionManager = new SessionManager({
+    repositories,
+    agentService,
+    eventBus,
+    registry: channelRegistry,
+    maxSessions: config.sdk.maxSessions,
+    defaultModel: config.sdk.defaultModel,
+  });
+
   // Web channel (always enabled if configured)
+  let webChannel: WebChannel | undefined;
   if (config.channels.web.enabled) {
-    const webChannel = new WebChannel(eventBus);
+    webChannel = new WebChannel(eventBus);
     channelRegistry.register(webChannel);
   }
 
@@ -88,15 +99,6 @@ async function main() {
     );
     channelRegistry.register(telegramChannel);
   }
-
-  // Initialize session manager
-  const sessionManager = new SessionManager({
-    repositories,
-    agentService,
-    eventBus,
-    maxSessions: config.sdk.maxSessions,
-    defaultModel: config.sdk.defaultModel,
-  });
 
   // Create Fastify app
   const app = fastify({

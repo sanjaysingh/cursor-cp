@@ -7,7 +7,7 @@ import { resolve } from 'path';
 import { homedir } from 'os';
 import yaml from 'js-yaml';
 import { z } from 'zod';
-import type { AppConfig, RepoEntry } from '../models/types.js';
+import type { AppConfig } from '../models/types.js';
 
 const RepoEntrySchema = z.object({
   name: z.string(),

@@ -5,7 +5,8 @@
 
 import { createInterface } from 'readline';
 import { writeFileSync, existsSync } from 'fs';
-import { resolve, homedir } from 'path';
+import { resolve } from 'path';
+import { homedir } from 'os';
 
 interface WizardAnswers {
   cursorApiKey: string;
@@ -13,7 +14,7 @@ interface WizardAnswers {
   telegramAllowedUsers: string;
   enableTelegram: boolean;
   enableWeb: boolean;
-  port: string;
+  port: number;
   host: string;
   workspaceRoot: string;
   defaultModel: string;
@@ -78,7 +79,8 @@ export async function runSetupWizard(dataDir: string): Promise<void> {
 
     // Server settings
     console.log('\n--- Server Settings ---');
-    const port = await ask('HTTP Port', '8080');
+    const portStr = await ask('HTTP Port', '8080');
+    const port = parseInt(portStr, 10) || 8080;
     const host = await ask('HTTP Host', '0.0.0.0');
 
     // Workspace

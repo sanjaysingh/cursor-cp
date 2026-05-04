@@ -47,7 +47,7 @@ export class Agent {
   private disposed = false;
 
   static models = {
-    async list(opts: { apiKey: string }): Promise<Model[]> {
+    async list(_opts: { apiKey: string }): Promise<Model[]> {
       // Return mock models
       return [
         { id: 'composer-2', name: 'Composer 2' },
@@ -61,8 +61,8 @@ export class Agent {
     return new Agent(options);
   }
 
-  constructor(options: AgentOptions) {
-    this.options = options;
+  constructor(_options: AgentOptions) {
+    this.options = _options;
   }
 
   async send(prompt: string): Promise<AgentRun> {
