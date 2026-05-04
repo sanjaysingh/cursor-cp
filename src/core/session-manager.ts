@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'crypto';
 import { basename } from 'path';
-import type { Session, MessageTarget } from '../models/types.js';
+import type { Session, IncomingMessage } from '../models/types.js';
 import type { SessionRepository, MessageRepository, ParticipantRepository, SettingsRepository } from '../db/repositories.js';
 import { AgentService } from './agent-service.js';
 import { EventBus } from './events.js';
@@ -288,7 +288,7 @@ export class SessionManager {
         }
         session.errorMessage = null;
       } else {
-        session.errorMessage = result.error;
+        session.errorMessage = result.error ?? null;
         session.activity = 'error';
       }
     } catch (err) {

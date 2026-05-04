@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { RepoPicker, type RepoPickerOptions } from './repo-picker.js';
-import { mkdtempSync, mkdirSync, writeFileSync, rmdirSync, unlinkSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmdirSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 
@@ -34,10 +34,10 @@ describe('RepoPicker', () => {
           } else {
             unlinkSync(path);
           }
-        } catch {}
+          } catch { /* ignore */ }
       }
       rmdirSync(tempDir);
-    } catch {}
+    } catch { /* ignore */ }
   });
 
   it('should scan workspace directories', async () => {

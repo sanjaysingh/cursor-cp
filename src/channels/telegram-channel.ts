@@ -16,13 +16,6 @@ interface PendingQuestion {
   options: string[];
   sessionId: string;
 }
-  id: string;
-  title: string;
-  repoName: string;
-  status: string;
-  activity: string;
-  model: string | null;
-}
 
 export class TelegramChannel implements Channel {
   readonly name = 'telegram';
@@ -91,7 +84,6 @@ export class TelegramChannel implements Channel {
 
     // Sessions list
     this.bot.command('sessions', async (ctx) => {
-      const _chatId = String(ctx.chat?.id);
       const sessions = this.sessionManager.listAllSessions(false);
 
       if (sessions.length === 0) {
@@ -204,7 +196,7 @@ export class TelegramChannel implements Channel {
         });
 
         await ctx.reply('GitHub repos — tap to clone:', Markup.inlineKeyboard(buttons));
-      } catch (err) {
+      } catch {
         await ctx.reply('Could not list GitHub repos. Is `gh` installed and logged in?');
       }
     });

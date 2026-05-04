@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ChannelRegistryImpl } from './registry.js';
-import type { Channel, MessageTarget } from './base.js';
+import type { Channel } from './base.js';
 
 class MockChannel implements Channel {
   name: string;

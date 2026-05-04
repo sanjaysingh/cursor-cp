@@ -29,10 +29,10 @@ describe('loadConfig', () => {
     process.env = originalEnv;
     try {
       unlinkSync(configPath);
-    } catch {}
+    } catch { /* ignore */ }
     try {
       rmdirSync(tempDir);
-    } catch {}
+    } catch { /* ignore */ }
   });
 
   it('should load default config when file does not exist', () => {

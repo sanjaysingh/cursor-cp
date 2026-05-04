@@ -43,6 +43,8 @@ export interface AgentRun {
 }
 
 export class Agent {
+  // Stored for future use in real implementation
+  // @ts-expect-error Property stored but not yet used in mock
   private options: AgentOptions;
   private disposed = false;
 
@@ -61,8 +63,8 @@ export class Agent {
     return new Agent(options);
   }
 
-  constructor(_options: AgentOptions) {
-    this.options = _options;
+  constructor(options: AgentOptions) {
+    this.options = options;
   }
 
   async send(prompt: string): Promise<AgentRun> {

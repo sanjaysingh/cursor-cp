@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { runSetupWizard, checkNeedsSetup } from './setup-wizard.js';
+import { checkNeedsSetup } from './setup-wizard.js';
 import { mkdtempSync, rmdirSync, unlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
@@ -16,14 +16,14 @@ describe('setup-wizard', () => {
   });
 
   afterEach(() => {
-    // Cleanup
+    // Cleanup - ignore errors if files don't exist
     try {
       const envPath = resolve(tempDir, '.env');
       if (existsSync(envPath)) unlinkSync(envPath);
-    } catch {}
+    } catch { /* ignore */ }
     try {
       rmdirSync(tempDir);
-    } catch {}
+    } catch { /* ignore */ }
   });
 
   describe('checkNeedsSetup', () => {
