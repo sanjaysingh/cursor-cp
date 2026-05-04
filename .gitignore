@@ -141,3 +141,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Workspace data
+cursor-cp-workspace/
+data/
+*.db
+*.db-shm
+*.db-wal

@@ -1,0 +1,329 @@
+/**
+ * Service Control - Manage background service (systemd/launchd)
+ */
+
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
+import { resolve } from 'path';
+import { homedir } from 'os';
+import { execSync, spawn } from 'child_process';
+
+const DATA_DIR = resolve(homedir(), '.config', 'cursor-cp');
+const SERVICE_MARKER = resolve(DATA_DIR, 'service.json');
+
+interface ServiceMarker {
+  type: 'systemd-user' | 'launchd';
+  unit?: string;
+  label?: string;
+  installDate: string;
+}
+
+export class ServiceController {
+  private marker: ServiceMarker | null = null;
+
+  constructor() {
+    this.loadMarker();
+  }
+
+  private loadMarker(): void {
+    if (existsSync(SERVICE_MARKER)) {
+      try {
+        const content = readFileSync(SERVICE_MARKER, 'utf-8');
+        this.marker = JSON.parse(content) as ServiceMarker;
+      } catch {
+        this.marker = null;
+      }
+    }
+  }
+
+  private saveMarker(marker: ServiceMarker): void {
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(SERVICE_MARKER, JSON.stringify(marker, null, 2));
+    this.marker = marker;
+  }
+
+  isInstalled(): boolean {
+    return this.marker !== null;
+  }
+
+  getStatus(): 'running' | 'stopped' | 'unknown' {
+    if (!this.marker) return 'unknown';
+
+    try {
+      if (this.marker.type === 'systemd-user') {
+        const output = execSync(`systemctl --user is-active ${this.marker.unit}`, {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+        });
+        return output.trim() === 'active' ? 'running' : 'stopped';
+      } else if (this.marker.type === 'launchd') {
+        const output = execSync(`launchctl list ${this.marker.label}`, {
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+        });
+        return output.includes('"PID"') ? 'running' : 'stopped';
+      }
+    } catch {
+      return 'stopped';
+    }
+
+    return 'unknown';
+  }
+
+  async install(): Promise<void> {
+    const platform = process.platform;
+
+    if (platform === 'darwin') {
+      await this.installLaunchd();
+    } else if (platform === 'linux') {
+      await this.installSystemd();
+    } else {
+      throw new Error(`Service installation not supported on ${platform}`);
+    }
+  }
+
+  private async installLaunchd(): Promise<void> {
+    const label = 'com.cursor.cp';
+    const plistPath = resolve(homedir(), 'Library/LaunchAgents', `${label}.plist`);
+    const binPath = resolve(homedir(), '.local/bin/cursor-cp');
+
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${binPath}</string>
+        <string>serve</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>NODE_ENV</key>
+        <string>production</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>${DATA_DIR}</string>
+    <key>StandardOutPath</key>
+    <string>${DATA_DIR}/service.log</string>
+    <key>StandardErrorPath</key>
+    <string>${DATA_DIR}/service.error.log</string>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>`;
+
+    mkdirSync(resolve(homedir(), 'Library/LaunchAgents'), { recursive: true });
+    writeFileSync(plistPath, plist);
+
+    // Load the service
+    try {
+      execSync(`launchctl load ${plistPath}`);
+    } catch {
+      throw new Error('Failed to load launchd service');
+    }
+
+    this.saveMarker({
+      type: 'launchd',
+      label,
+      installDate: new Date().toISOString(),
+    });
+
+    console.log('✅ Installed as macOS LaunchAgent');
+    console.log(`   Plist: ${plistPath}`);
+    console.log(`   Logs: ${DATA_DIR}/service.log`);
+  }
+
+  private async installSystemd(): Promise<void> {
+    const unit = 'cursor-cp.service';
+    const unitPath = resolve(homedir(), '.config/systemd/user', unit);
+    const binPath = resolve(homedir(), '.local/bin/cursor-cp');
+
+    const service = `[Unit]
+Description=Cursor Control Plane
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${binPath} serve
+Restart=on-failure
+RestartSec=10
+Environment=NODE_ENV=production
+WorkingDirectory=${DATA_DIR}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target`;
+
+    mkdirSync(resolve(homedir(), '.config/systemd/user'), { recursive: true });
+    writeFileSync(unitPath, service);
+
+    // Reload and enable
+    try {
+      execSync('systemctl --user daemon-reload');
+      execSync(`systemctl --user enable ${unit}`);
+      execSync(`systemctl --user start ${unit}`);
+    } catch (err) {
+      throw new Error(`Failed to install systemd service: ${err}`);
+    }
+
+    this.saveMarker({
+      type: 'systemd-user',
+      unit,
+      installDate: new Date().toISOString(),
+    });
+
+    console.log('✅ Installed as systemd user service');
+    console.log(`   Unit: ${unitPath}`);
+    console.log('   View logs: journalctl --user -u cursor-cp.service -f');
+  }
+
+  async start(): Promise<void> {
+    if (!this.marker) {
+      throw new Error('Service not installed. Run: cursor-cp service install');
+    }
+
+    if (this.marker.type === 'systemd-user') {
+      execSync(`systemctl --user start ${this.marker.unit}`);
+    } else if (this.marker.type === 'launchd') {
+      const plistPath = resolve(homedir(), 'Library/LaunchAgents', `${this.marker.label}.plist`);
+      execSync(`launchctl load ${plistPath}`);
+    }
+
+    console.log('✅ Service started');
+  }
+
+  async stop(): Promise<void> {
+    if (!this.marker) {
+      throw new Error('Service not installed');
+    }
+
+    if (this.marker.type === 'systemd-user') {
+      execSync(`systemctl --user stop ${this.marker.unit}`);
+    } else if (this.marker.type === 'launchd') {
+      try {
+        execSync(`launchctl unload ${resolve(homedir(), 'Library/LaunchAgents', `${this.marker.label}.plist`)}`);
+      } catch {
+        // Ignore unload errors
+      }
+    }
+
+    console.log('✅ Service stopped');
+  }
+
+  async restart(): Promise<void> {
+    if (!this.marker) {
+      throw new Error('Service not installed. Run: cursor-cp service install');
+    }
+
+    if (this.marker.type === 'systemd-user') {
+      execSync(`systemctl --user restart ${this.marker.unit}`);
+    } else if (this.marker.type === 'launchd') {
+      const plistPath = resolve(homedir(), 'Library/LaunchAgents', `${this.marker.label}.plist`);
+      try {
+        execSync(`launchctl unload ${plistPath}`);
+      } catch {
+        // Ignore
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      execSync(`launchctl load ${plistPath}`);
+    }
+
+    console.log('✅ Service restarted');
+  }
+
+  async uninstall(): Promise<void> {
+    if (!this.marker) {
+      console.log('No service installed');
+      return;
+    }
+
+    // Stop first
+    try {
+      await this.stop();
+    } catch {
+      // Ignore stop errors
+    }
+
+    if (this.marker.type === 'systemd-user') {
+      const unitPath = resolve(homedir(), '.config/systemd/user', this.marker.unit!);
+      try {
+        execSync(`systemctl --user disable ${this.marker.unit}`);
+      } catch {
+        // Ignore
+      }
+      if (existsSync(unitPath)) {
+        require('fs').unlinkSync(unitPath);
+      }
+    } else if (this.marker.type === 'launchd') {
+      const plistPath = resolve(homedir(), 'Library/LaunchAgents', `${this.marker.label}.plist`);
+      if (existsSync(plistPath)) {
+        require('fs').unlinkSync(plistPath);
+      }
+    }
+
+    // Remove marker
+    if (existsSync(SERVICE_MARKER)) {
+      require('fs').unlinkSync(SERVICE_MARKER);
+    }
+    this.marker = null;
+
+    console.log('✅ Service uninstalled');
+  }
+
+  printStatus(): void {
+    if (!this.marker) {
+      console.log('Service status: Not installed');
+      console.log('Run: cursor-cp service install');
+      return;
+    }
+
+    const status = this.getStatus();
+    console.log(`Service type: ${this.marker.type}`);
+    console.log(`Status: ${status}`);
+    console.log(`Installed: ${this.marker.installDate}`);
+
+    if (this.marker.type === 'systemd-user') {
+      console.log(`Unit: ${this.marker.unit}`);
+      console.log('Commands:');
+      console.log(`  systemctl --user status ${this.marker.unit}`);
+      console.log(`  systemctl --user restart ${this.marker.unit}`);
+    } else if (this.marker.type === 'launchd') {
+      console.log(`Label: ${this.marker.label}`);
+      console.log('Commands:');
+      console.log(`  launchctl list ${this.marker.label}`);
+    }
+  }
+}
+
+// CLI commands
+export async function runServiceCommand(command: string): Promise<void> {
+  const controller = new ServiceController();
+
+  switch (command) {
+    case 'install':
+      await controller.install();
+      break;
+    case 'start':
+      await controller.start();
+      break;
+    case 'stop':
+      await controller.stop();
+      break;
+    case 'restart':
+      await controller.restart();
+      break;
+    case 'status':
+      controller.printStatus();
+      break;
+    case 'uninstall':
+      await controller.uninstall();
+      break;
+    default:
+      console.log('Usage: cursor-cp service [install|start|stop|restart|status|uninstall]');
+      process.exit(1);
+  }
+}

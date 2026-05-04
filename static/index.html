@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cursor Control Plane</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.x.x/dist/purify.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .streaming-cursor::after {
+      content: '\25ae';
+      animation: blink 1s infinite;
+    }
+    @keyframes blink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
+    }
+    .code-block {
+      background: #1e1e1e;
+      border-radius: 0.5rem;
+      padding: 1rem;
+      overflow-x: auto;
+      margin: 0.5rem 0;
+    }
+    .code-block pre {
+      color: #d4d4d4;
+      font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+      font-size: 0.875rem;
+      line-height: 1.5;
+    }
+    /* Scrollbar styling */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #1f2937;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #4b5563;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #6b7280;
+    }
+  </style>
+</head>
+<body class="bg-gray-900 text-white h-screen overflow-hidden" x-data="dashboard()" x-init="init()">
+  <div class="flex h-full">
+    <!-- Sidebar -->
+    <div
+      class="flex-shrink-0 bg-gray-800 border-r border-gray-700 flex flex-col transition-all duration-300"
+      :class="sidebarCollapsed ? 'w-0 opacity-0' : 'w-80 opacity-100'"
+      x-cloak
+    >
+      <!-- Header -->
+      <div class="p-4 border-b border-gray-700">
+        <div class="flex items-center justify-between mb-4">
+          <h1 class="text-xl font-bold text-blue-400">Cursor CP</h1>
+          <button
+            @click="toggleSidebar()"
+            class="p-1 text-gray-400 hover:text-white"
+            title="Collapse sidebar"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- New Session Button -->
+        <button
+          @click="showNewSessionModal = true"
+          :disabled="atSessionLimit"
+          class="w-full py-2 px-4 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          </svg>
+          New Session
+        </button>
+        <p x-show="atSessionLimit" class="text-xs text-red-400 mt-2 text-center">Maximum 5 sessions reached</p>
+      </div>
+
+      <!-- Session List -->
+      <div class="flex-1 overflow-y-auto p-4 space-y-2">
+        <template x-for="session in sessions" :key="session.id">
+          <div
+            @click="selectSession(session.id)"
+            class="p-3 rounded-lg cursor-pointer transition-colors"
+            :class="selectedSessionId === session.id ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'"
+          >
+            <div class="flex items-start justify-between">
+              <div class="flex-1 min-w-0">
+                <h3 class="font-medium truncate" x-text="session.title || 'Untitled'" :title="session.title"></h3>
+                <p class="text-xs text-gray-400 truncate" x-text="session.repo_name"></p>
+              </div>
+              <span
+                class="ml-2 w-2 h-2 rounded-full flex-shrink-0"
+                :class="{
+                  'bg-green-400': session.activity === 'idle',
+                  'bg-yellow-400': session.activity === 'running' || session.activity === 'connecting',
+                  'bg-blue-400': session.activity === 'waiting_user',
+                  'bg-red-400': session.activity === 'error'
+                }"
+              ></span>
+            </div>
+            <div class="mt-2 flex items-center justify-between text-xs text-gray-400">
+              <span x-text="session.model || 'Auto'"></span>
+              <button
+                @click.stop="closeSession(session.id)"
+                class="text-red-400 hover:text-red-300 p-1"
+                title="Close session"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </template>
+        <p x-show="sessions.length === 0" class="text-center text-gray-500 py-8">
+          No sessions yet. Create one to get started.
+        </p>
+      </div>
+
+      <!-- Settings -->
+      <div class="p-4 border-t border-gray-700">
+        <h3 class="text-sm font-medium text-gray-400 mb-2">Default Model</h3>
+        <select
+          x-model="defaultModelPreference"
+          @change="saveDefaultModel()"
+          class="w-full bg-gray-700 text-white rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">Auto</option>
+          <template x-for="model in availableModels" :key="model.id">
+            <option :value="model.id" x-text="model.name"></option>
+          </template>
+        </select>
+        <p x-show="modelsLoadError" class="text-xs text-red-400 mt-1" x-text="modelsLoadError"></p>
+      </div>
+    </div>
+
+    <!-- Main Chat Area -->
+    <div class="flex-1 flex flex-col min-w-0">
+      <!-- Mobile Header -->
+      <div class="md:hidden p-3 bg-gray-800 border-b border-gray-700 flex items-center justify-between">
+        <button @click="toggleSidebar()" class="text-gray-400 hover:text-white">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+          </svg>
+        </button>
+        <span class="font-medium" x-text="selectedSession?.title || 'Cursor CP'"></span>
+        <div class="w-6"></div>
+      </div>
+
+      <!-- Session Header -->
+      <div class="p-4 border-b border-gray-700 bg-gray-800" x-show="selectedSession" x-cloak>
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="font-semibold" x-text="selectedSession?.title"></h2>
+            <p class="text-sm text-gray-400">
+              <span x-text="selectedSession?.repo_name"></span>
+              <span class="mx-2">|</span>
+              <span x-text="selectedSession?.model || 'Auto'"></span>
+            </p>
+          </div>
+          <div class="flex items-center gap-3">
+            <span
+              class="px-3 py-1 rounded-full text-xs font-medium"
+              :class="{
+                'bg-green-900 text-green-300': selectedSession?.activity === 'idle',
+                'bg-yellow-900 text-yellow-300': selectedSession?.activity === 'running',
+                'bg-blue-900 text-blue-300': selectedSession?.activity === 'waiting_user',
+                'bg-red-900 text-red-300': selectedSession?.activity === 'error'
+              }"
+              x-text="selectedSession?.activity"
+            ></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div class="flex-1 overflow-y-auto p-4 space-y-4" id="messages-container" x-ref="messagesContainer">
+        <!-- Empty State -->
+        <div x-show="!selectedSession" class="h-full flex items-center justify-center text-gray-500">
+          <div class="text-center">
+            <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/>
+            </svg>
+            <p>Select or create a session to start</p>
+          </div>
+        </div>
+
+        <!-- Loading State -->
+        <div x-show="selectedSession && messages.length === 0 && !awaitingAgentReply" class="text-center text-gray-500 py-8">
+          <p>No messages yet. Send a prompt to start the conversation.</p>
+        </div>
+
+        <!-- Message List -->
+        <template x-for="(msg, index) in messages" :key="index">
+          <div
+            class="flex"
+            :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
+          >
+            <div
+              class="max-w-[80%] rounded-lg p-4"
+              :class="{
+                'bg-blue-600 text-white': msg.role === 'user',
+                'bg-gray-700 text-gray-100': msg.role === 'assistant'
+              }"
+            >
+              <div class="prose prose-invert prose-sm max-w-none" x-html="renderMarkdown(msg.content)"></div>
+            </div>
+          </div>
+        </template>
+
+        <!-- Streaming Output -->
+        <div x-show="streamText" class="flex justify-start">
+          <div class="max-w-[80%] rounded-lg p-4 bg-gray-700">
+            <div class="prose prose-invert prose-sm max-w-none streaming-cursor" x-html="renderMarkdown(streamText)"></div>
+          </div>
+        </div>
+
+        <!-- Pending Question -->
+        <div x-show="pendingQuestion" class="flex justify-start">
+          <div class="max-w-[80%] rounded-lg p-4 bg-blue-900">
+            <p class="font-medium mb-3" x-text="pendingQuestion?.question"></p>
+            <div class="flex flex-wrap gap-2">
+              <template x-for="option in pendingQuestion?.options" :key="option">
+                <button
+                  @click="answerQuestion(option)"
+                  class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium transition-colors"
+                  x-text="option"
+                ></button>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input Area -->
+      <div class="p-4 border-t border-gray-700 bg-gray-800" x-show="selectedSession" x-cloak>
+        <form @submit.prevent="sendMessage()" class="flex gap-2">
+          <textarea
+            x-model="draft"
+            @keydown.enter.prevent="if (!event.shiftKey) sendMessage()"
+            placeholder="Type your message... (Shift+Enter for new line)"
+            class="flex-1 bg-gray-700 text-white rounded-lg px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            rows="2"
+            :disabled="awaitingAgentReply"
+          ></textarea>
+          <button
+            type="submit"
+            :disabled="!canSend"
+            class="px-6 py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+          >
+            <svg x-show="!awaitingAgentReply" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+            </svg>
+            <svg x-show="awaitingAgentReply" class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- New Session Modal -->
+    <div
+      x-show="showNewSessionModal"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+      x-cloak
+      @keydown.escape.window="showNewSessionModal = false"
+    >
+      <div class="bg-gray-800 rounded-lg max-w-lg w-full p-6" @click.outside="showNewSessionModal = false">
+        <h2 class="text-xl font-bold mb-4">New Session</h2>
+
+        <!-- Repo Picker -->
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-400 mb-2">Repository</label>
+          <select
+            x-model="selectedRepoPickId"
+            class="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">Select a repository...</option>
+            <optgroup label="Local Workspaces">
+              <template x-for="item in repoPickerItems.filter(i => i.type === 'local')" :key="item.id">
+                <option :value="item.path" x-text="item.name"></option>
+              </template>
+            </optgroup>
+            <optgroup label="Clone from GitHub">
+              <template x-for="item in repoPickerItems.filter(i => i.type === 'github' && !isCloned(i))" :key="item.id">
+                <option :value="item.nameWithOwner" x-text="item.name"></option>
+              </template>
+            </optgroup>
+          </select>
+          <p x-show="repoPickerLoading" class="text-sm text-gray-500 mt-1">Loading repositories...</p>
+          <p x-show="repoPickerError" class="text-sm text-red-400 mt-1" x-text="repoPickerError"></p>
+        </div>
+
+        <!-- Model -->
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-gray-400 mb-2">Model</label>
+          <select
+            x-model="newSessionModel"
+            class="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">Auto (default)</option>
+            <template x-for="model in availableModels" :key="model.id">
+              <option :value="model.id" x-text="model.name"></option>
+            </template>
+          </select>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex justify-end gap-3">
+          <button
+            @click="showNewSessionModal = false"
+            class="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            @click="createSession()"
+            :disabled="!selectedRepoPickId || repoCloneBusy"
+            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
+          >
+            <span x-show="!repoCloneBusy">Create Session</span>
+            <span x-show="repoCloneBusy">Cloning...</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

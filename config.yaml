@@ -1,0 +1,21 @@
+repos: []
+
+# Workspace root for repositories
+# workspace_root: ""
+
+channels:
+  telegram:
+    enabled: false
+  web:
+    enabled: true
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+# Cursor SDK configuration
+sdk:
+  # Default model for new sessions (empty = let SDK choose)
+  default_model: "composer-2"
+  # Maximum concurrent agent sessions
+  max_sessions: 5
