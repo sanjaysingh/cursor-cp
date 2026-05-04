@@ -235,6 +235,10 @@ export function checkNeedsSetup(dataDir: string): boolean {
 import { readFileSync } from 'fs';
 
 export async function ensureSetup(dataDir: string): Promise<void> {
+  // Skip setup wizard in CI environments - use environment variables instead
+  if (process.env.CI === 'true') {
+    return;
+  }
   if (checkNeedsSetup(dataDir)) {
     await runSetupWizard(dataDir);
   }
