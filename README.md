@@ -470,7 +470,7 @@ export CURSOR_API_KEY="your-key-here"
 ```
 
 **"Cannot find module '@cursor/sdk'"**
-The SDK is mocked for now. Ensure you're importing from the correct path.
+Run `npm install` to install dependencies including `@cursor/sdk`.
 
 **Port already in use**
 ```bash

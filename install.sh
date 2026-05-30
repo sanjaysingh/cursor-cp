@@ -306,7 +306,7 @@ server:
   port: 8080
 
 sdk:
-  default_model: "composer-2"
+  default_model: "composer-2.5"
   max_sessions: 5
 EOF
 

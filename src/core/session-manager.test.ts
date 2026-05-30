@@ -2,7 +2,39 @@
  * Tests for SessionManager
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+const { mockAgent, sdkMock } = vi.hoisted(() => {
+  const mockAgent = {
+    agentId: 'agent-test-id',
+    model: { id: 'composer-2' },
+    send: vi.fn(),
+    close: vi.fn(),
+    reload: vi.fn().mockResolvedValue(undefined),
+    [Symbol.asyncDispose]: vi.fn().mockResolvedValue(undefined),
+    listArtifacts: vi.fn().mockResolvedValue([]),
+    downloadArtifact: vi.fn(),
+  };
+
+  return {
+    mockAgent,
+    sdkMock: {
+      Agent: {
+        create: vi.fn().mockResolvedValue(mockAgent),
+      },
+      Cursor: {
+        models: {
+          list: vi.fn().mockResolvedValue([{ id: 'composer-2', displayName: 'Composer 2' }]),
+        },
+      },
+      CursorAgentError: class CursorAgentError extends Error {
+        isRetryable = false;
+      },
+    },
+  };
+});
+
+vi.mock('@cursor/sdk', () => sdkMock);
 import Database from 'better-sqlite3';
 import { resolve } from 'path';
 import { tmpdir } from 'os';
@@ -25,6 +57,9 @@ describe('SessionManager', () => {
   let dbPath: string;
 
   beforeEach(() => {
+    vi.clearAllMocks();
+    sdkMock.Agent.create.mockResolvedValue(mockAgent);
+
     dbPath = resolve(tmpdir(), `test-sm-${Date.now()}.db`);
     db = new Database(dbPath);
 

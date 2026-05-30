@@ -27,9 +27,9 @@ const AppConfigSchema = z.object({
     port: z.number().default(8080),
   }).default({ host: '0.0.0.0', port: 8080 }),
   sdk: z.object({
-    default_model: z.string().default('composer-2'),
+    default_model: z.string().default('composer-2.5'),
     max_sessions: z.number().default(5),
-  }).default({ default_model: 'composer-2', max_sessions: 5 }),
+  }).default({ default_model: 'composer-2.5', max_sessions: 5 }),
 });
 
 type RawConfig = z.infer<typeof AppConfigSchema>;
