@@ -3,8 +3,13 @@
  * Manages agent lifecycle using the official @cursor/sdk
  */
 
-// TODO: Replace with actual SDK when available
-import { Agent, type CursorAgentError } from '../mocks/cursor-sdk.js';
+import {
+  Agent,
+  Cursor,
+  CursorAgentError,
+  type Run,
+  type SDKAgent,
+} from '@cursor/sdk';
 import type { AgentActivity } from '../models/types.js';
 
 export interface AgentRunResult {
@@ -15,7 +20,8 @@ export interface AgentRunResult {
 
 export interface AgentSession {
   id: string;
-  agent: Agent;
+  agent: SDKAgent;
+  sdkAgentId: string;
   model: string;
   workspacePath: string;
   activity: AgentActivity;
@@ -25,12 +31,13 @@ export interface AgentSession {
 
 interface StreamChunk {
   text: string;
-  type: 'text' | 'tool' | 'error';
+  type: 'text' | 'tool' | 'error' | 'thinking' | 'status';
 }
 
 export interface AgentQuestion {
   question: string;
   options: string[];
+  requestId?: string;
 }
 
 export class AgentService {
@@ -60,16 +67,20 @@ export class AgentService {
   ): Promise<AgentSession> {
     const effectiveModel = model || this.defaultModel;
 
-    // Create SDK agent with local runtime
-    const agent = Agent.create({
+    const agent = await Agent.create({
       apiKey: this.apiKey,
       model: { id: effectiveModel },
-      local: { cwd: workspacePath },
+      local: {
+        cwd: workspacePath,
+        // Avoid loading ambient IDE settings in a headless service.
+        settingSources: [],
+      },
     });
 
     const session: AgentSession = {
       id: sessionId,
       agent,
+      sdkAgentId: agent.agentId,
       model: effectiveModel,
       workspacePath,
       activity: 'idle',
@@ -91,123 +102,185 @@ export class AgentService {
     session.outputBuffer = '';
 
     try {
-      const run = await session.agent.send(prompt);
+      let followUpPrompt: string | undefined = prompt;
 
-      // Stream the response
-      for await (const event of run.stream()) {
-        // Handle different event types from SDK
-        switch (event.type) {
-          case 'assistant': {
-            // Regular text output from agent
-            if (event.message?.content) {
-              for (const block of event.message.content) {
-                if (block.type === 'text' && block.text) {
-                  const chunk: StreamChunk = { text: block.text, type: 'text' };
-                  session.outputBuffer += block.text;
-                  this.onStreamCallback?.(sessionId, chunk);
-                }
-              }
-            }
-            break;
-          }
+      while (followUpPrompt) {
+        const currentPrompt = followUpPrompt;
+        followUpPrompt = undefined;
 
-          case 'question': {
-            // Agent is asking a question - this is the critical fix
-            // Extract question text and options properly
-            const questionText = event.question || 'Please choose:';
-            const options = event.options || ['OK'];
+        const run = await session.agent.send(currentPrompt);
+        console.debug(
+          `Agent run started: session=${sessionId} agent=${session.sdkAgentId} run=${run.id}`
+        );
 
-            // Stream the question text to UI first (so user sees context)
-            const questionChunk: StreamChunk = {
-              text: `**${questionText}**`,
-              type: 'text',
-            };
-            session.outputBuffer += questionText + '\n';
-            this.onStreamCallback?.(sessionId, questionChunk);
+        const pendingAnswer = await this.consumeRunStream(sessionId, session, run);
+        const result = await run.wait();
 
-            // If we have a question handler, use it
-            if (this.onQuestionCallback) {
-              try {
-                const answer = await this.onQuestionCallback(sessionId, {
-                  question: questionText,
-                  options,
-                });
-
-                // Send the answer back to the agent
-                // Note: The SDK may handle this differently - we might need
-                // to send the answer through a different mechanism
-                session.outputBuffer += `> ${answer}\n`;
-              } catch (err) {
-                console.error('Failed to get answer for question:', err);
-                // Default to first option
-                session.outputBuffer += `> ${options[0]}\n`;
-              }
-            }
-            break;
-          }
-
-          case 'tool': {
-            // Tool call event - could show to user for transparency
-            if (event.tool) {
-              const toolText = `🔧 Using tool: ${event.tool.name}\n`;
-              const chunk: StreamChunk = { text: toolText, type: 'tool' };
-              this.onStreamCallback?.(sessionId, chunk);
-            }
-            break;
-          }
-
-          case 'error': {
-            // Error event from stream
-            const errorText = event.message || 'An error occurred';
-            const chunk: StreamChunk = { text: `❌ ${errorText}\n`, type: 'error' };
-            this.onStreamCallback?.(sessionId, chunk);
-            break;
-          }
-
-          default: {
-            // Unknown event type - log for debugging
-            console.debug('Unknown SDK event type:', event.type, event);
-          }
+        if (pendingAnswer) {
+          followUpPrompt = pendingAnswer;
+          continue;
         }
-      }
 
-      // Wait for completion and get result
-      const result = await run.wait();
+        if (result.status === 'error') {
+          session.activity = 'error';
+          return {
+            success: false,
+            error: `Agent run failed: ${result.id}`,
+            text: this.finalText(session, result.result),
+          };
+        }
 
-      if (result.status === 'error') {
-        session.activity = 'error';
+        if (result.status === 'cancelled') {
+          session.activity = 'idle';
+          return {
+            success: false,
+            error: `Agent run cancelled: ${result.id}`,
+            text: this.finalText(session, result.result),
+          };
+        }
+
+        session.activity = 'idle';
         return {
-          success: false,
-          error: `Agent run failed: ${result.id}`,
-          text: session.outputBuffer,
+          success: true,
+          text: this.finalText(session, result.result),
         };
       }
 
       session.activity = 'idle';
-      return {
-        success: true,
-        text: session.outputBuffer,
-      };
+      return { success: true, text: session.outputBuffer };
     } catch (err) {
-      const error = err as CursorAgentError;
       session.activity = 'error';
 
-      // Check if it's a startup failure (auth, config, network)
-      if (error instanceof Error && error.name === 'CursorAgentError') {
-        const cae = error as CursorAgentError;
+      if (err instanceof CursorAgentError) {
         return {
           success: false,
-          error: `Startup failed: ${cae.message} (retryable: ${cae.isRetryable})`,
+          error: `Startup failed: ${err.message} (retryable: ${err.isRetryable})`,
           text: session.outputBuffer,
         };
       }
 
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: err instanceof Error ? err.message : String(err),
         text: session.outputBuffer,
       };
     }
+  }
+
+  private finalText(session: AgentSession, runResult?: string): string {
+    return session.outputBuffer || runResult || '';
+  }
+
+  private emitChunk(sessionId: string, session: AgentSession, chunk: StreamChunk): void {
+    if (chunk.type === 'text') {
+      session.outputBuffer += chunk.text;
+    }
+    this.onStreamCallback?.(sessionId, chunk);
+  }
+
+  private lastAssistantText(session: AgentSession): string {
+    const lines = session.outputBuffer.trim().split('\n');
+    return lines.at(-1)?.trim() || session.outputBuffer.trim();
+  }
+
+  private async consumeRunStream(
+    sessionId: string,
+    session: AgentSession,
+    run: Run
+  ): Promise<string | undefined> {
+    let pendingAnswer: string | undefined;
+
+    for await (const event of run.stream()) {
+      switch (event.type) {
+        case 'assistant': {
+          for (const block of event.message.content) {
+            if (block.type === 'text' && block.text) {
+              this.emitChunk(sessionId, session, { text: block.text, type: 'text' });
+            } else if (block.type === 'tool_use') {
+              this.emitChunk(sessionId, session, {
+                text: `🔧 Tool requested: ${block.name}\n`,
+                type: 'tool',
+              });
+            }
+          }
+          break;
+        }
+
+        case 'thinking': {
+          if (event.text) {
+            this.emitChunk(sessionId, session, { text: event.text, type: 'thinking' });
+          }
+          break;
+        }
+
+        case 'tool_call': {
+          const statusSuffix =
+            event.status === 'completed'
+              ? ' completed'
+              : event.status === 'error'
+                ? ' failed'
+                : ' started';
+          this.emitChunk(sessionId, session, {
+            text: `🔧 ${event.name}${statusSuffix}\n`,
+            type: 'tool',
+          });
+          break;
+        }
+
+        case 'status': {
+          if (event.message) {
+            this.emitChunk(sessionId, session, {
+              text: `[${event.status}] ${event.message}\n`,
+              type: 'status',
+            });
+          }
+          break;
+        }
+
+        case 'task': {
+          if (event.text) {
+            this.emitChunk(sessionId, session, { text: `${event.text}\n`, type: 'text' });
+          }
+          break;
+        }
+
+        case 'request': {
+          const questionText =
+            this.lastAssistantText(session) ||
+            'The agent needs your input to continue.';
+
+          this.emitChunk(sessionId, session, {
+            text: `\n**Input needed:** ${questionText}\n`,
+            type: 'text',
+          });
+
+          if (this.onQuestionCallback) {
+            try {
+              const answer = await this.onQuestionCallback(sessionId, {
+                question: questionText,
+                options: ['Continue'],
+                requestId: event.request_id,
+              });
+              pendingAnswer = answer;
+              this.emitChunk(sessionId, session, { text: `> ${answer}\n`, type: 'text' });
+            } catch (err) {
+              console.error('Failed to get answer for SDK request event:', err);
+            }
+          }
+          break;
+        }
+
+        case 'system':
+        case 'user':
+          break;
+
+        default: {
+          console.debug('Unhandled SDK event type:', event);
+        }
+      }
+    }
+
+    return pendingAnswer;
   }
 
   async closeSession(sessionId: string): Promise<boolean> {
@@ -217,7 +290,6 @@ export class AgentService {
     }
 
     try {
-      // Properly dispose of the agent
       await session.agent[Symbol.asyncDispose]();
     } catch (err) {
       console.error(`Error disposing agent for session ${sessionId}:`, err);
@@ -252,13 +324,12 @@ export class AgentService {
 
   async listAvailableModels(): Promise<Array<{ id: string; name: string }>> {
     try {
-      const models = await Agent.models.list({ apiKey: this.apiKey });
-      return models.map((m) => ({ id: m.id, name: m.name ?? m.id }));
+      const models = await Cursor.models.list({ apiKey: this.apiKey });
+      return models.map((m) => ({ id: m.id, name: m.displayName || m.id }));
     } catch (err) {
       console.error('Failed to list models:', err);
-      // Return default models as fallback
       return [
-        { id: 'composer-2', name: 'composer-2' },
+        { id: this.defaultModel, name: this.defaultModel },
         { id: 'auto', name: 'Auto' },
       ];
     }

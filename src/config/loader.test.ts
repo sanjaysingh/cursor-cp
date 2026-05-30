@@ -41,7 +41,7 @@ describe('loadConfig', () => {
 
     expect(config.server.host).toBe('0.0.0.0');
     expect(config.server.port).toBe(8080);
-    expect(config.sdk.defaultModel).toBe('composer-2');
+    expect(config.sdk.defaultModel).toBe('composer-2.5');
     expect(config.sdk.maxSessions).toBe(5);
   });
 

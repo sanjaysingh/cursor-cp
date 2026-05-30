@@ -16,6 +16,6 @@ server:
 # Cursor SDK configuration
 sdk:
   # Default model for new sessions (empty = let SDK choose)
-  default_model: "composer-2"
+  default_model: "composer-2.5"
   # Maximum concurrent agent sessions
   max_sessions: 5

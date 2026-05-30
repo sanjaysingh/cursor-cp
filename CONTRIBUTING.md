@@ -137,11 +137,14 @@ describe('Feature', () => {
 
 ```typescript
 // Mock SDK
-vi.mock('../mocks/cursor-sdk.js', () => ({
+vi.mock('@cursor/sdk', () => ({
   Agent: {
     create: vi.fn(),
+  },
+  Cursor: {
     models: { list: vi.fn() },
   },
+  CursorAgentError: class extends Error {},
 }));
 
 // Mock database

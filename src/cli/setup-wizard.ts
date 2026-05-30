@@ -197,7 +197,7 @@ server:
 
 # SDK settings
 sdk:
-  default_model: "${answers.defaultModel || 'composer-2'}"
+  default_model: "${answers.defaultModel || 'composer-2.5'}"
   max_sessions: 5
 `;
 }
