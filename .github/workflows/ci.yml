@@ -55,11 +55,14 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: 'npm'
 
-      - name: Install Python setuptools (macOS)
+      - uses: actions/setup-python@v5
         if: runner.os == 'macOS'
-        run: python3 -m pip install setuptools
+        with:
+          python-version: '3.11'
 
       - run: npm ci
+        env:
+          npm_config_python: python3
 
       - run: npm test
 
