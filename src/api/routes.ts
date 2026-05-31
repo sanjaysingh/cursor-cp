@@ -39,7 +39,7 @@ export async function registerRoutes(
   // Health check
   fastify.get('/health', async () => ({
     status: 'ok',
-    version: '0.1.0',
+    version: '0.2.1',
   }));
 
   // Dashboard config

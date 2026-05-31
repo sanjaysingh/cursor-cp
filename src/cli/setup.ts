@@ -27,13 +27,10 @@ export interface SetupValues {
   };
 }
 
-export function validateApiKey(key: string): { ok: boolean; warning?: string } {
+export function validateApiKey(key: string): { ok: boolean } {
   const trimmed = key.trim();
   if (!trimmed || trimmed.startsWith('your_')) {
     return { ok: false };
-  }
-  if (!trimmed.startsWith('cursor_')) {
-    return { ok: true, warning: "Key does not start with 'cursor_' — continuing anyway." };
   }
   return { ok: true };
 }
@@ -205,15 +202,17 @@ async function runInteractive(prompter: Prompter, existing: Existing): Promise<S
   while (true) {
     const hint = apiKey ? ` [keep current: ${maskKey(apiKey)}]` : '';
     const entered = await prompter.askSecret(`Cursor API key${hint}: `);
-    if (!entered && apiKey) break;
+    if (!entered) break;
     const result = validateApiKey(entered);
     if (!result.ok) {
-      console.log(`  An API key is required. Get one at ${API_KEY_HELP}`);
+      console.log(`  Invalid or placeholder key. Get one at ${API_KEY_HELP}`);
       continue;
     }
-    if (result.warning) console.log(`  ${result.warning}`);
     apiKey = entered;
     break;
+  }
+  if (!validateApiKey(apiKey).ok) {
+    console.log(`  Warning: no API key configured. Set cursor.api_key in ${userConfigPath()} or re-run setup.`);
   }
 
   const defaultModel =
@@ -267,7 +266,6 @@ function resolveNonInteractive(existing: Existing): SetupValues {
     console.error(`Set cursor.api_key in ${userConfigPath()} and re-run. Get a key at ${API_KEY_HELP}`);
     process.exit(1);
   }
-  if (result.warning) console.log(result.warning);
 
   const telegramEnabled = existing.telegramEnabled || Boolean(existing.telegramToken);
   return {

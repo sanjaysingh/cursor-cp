@@ -47,9 +47,6 @@ function checkApiKey(config: ReturnType<typeof loadConfig>['config']): Check {
   if (!result.ok) {
     return { status: 'fail', message: 'cursor.api_key is not set — run `cursor-cp setup`' };
   }
-  if (result.warning) {
-    return { status: 'warn', message: `cursor.api_key set, but ${result.warning}` };
-  }
   return { status: 'pass', message: 'cursor.api_key is set' };
 }
 

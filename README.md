@@ -58,17 +58,21 @@ curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.
 That's the supported install method. It performs a per-user install (no `sudo`,
 everything inside your home directory): it clones the project to
 `~/.local/share/cursor-cp`, installs dependencies, builds it, and adds a `cursor-cp`
-launcher to `~/.local/bin`. It then launches an interactive **setup wizard** that
-collects your Cursor API key, default model, port, and optional Telegram bot, and
-offers to enable the background daemon.
+launcher to `~/.local/bin`.
 
-When setup finishes, start it (or it's already running if you enabled the daemon):
+Configure it after install:
+
+```bash
+cursor-cp setup    # API key, default model, port, optional Telegram, daemon
+```
+
+Then start the server (or enable the daemon during setup):
 
 ```bash
 cursor-cp        # serve at http://localhost:8747
 ```
 
-You can re-run the wizard anytime with `cursor-cp setup`, and verify your install with
+Re-run the wizard anytime with `cursor-cp setup`, and verify your install with
 `cursor-cp doctor`.
 
 > **Prefer to clone and run from source?** See [Development](#development).
@@ -81,15 +85,15 @@ You can re-run the wizard anytime with `cursor-cp setup`, and verify your instal
 curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh | bash
 ```
 
-On an interactive terminal the installer runs `cursor-cp setup` automatically.
-To skip configuration and run the wizard later, pass `--no-setup`.
+On an interactive terminal the installer prints next steps; run `cursor-cp setup`
+to configure your API key, model, port, and optional Telegram bot.
 
 Pass options through the pipe with `bash -s --`:
 
 ```bash
 # Install a specific tag/branch, or to a custom directory
 curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh \
-  | bash -s -- --version v0.1.0 --dir "$HOME/apps/cursor-cp"
+  | bash -s -- --version v0.2.1 --dir "$HOME/apps/cursor-cp"
 ```
 
 You can also download and run it directly (`bash install.sh [options]`).
@@ -98,7 +102,6 @@ You can also download and run it directly (`bash install.sh [options]`).
 |------|----------------------|---------|-------------|
 | `--version <ref>` | `CURSOR_CP_VERSION` | `latest` (main) | Git tag/branch to install |
 | `--dir <path>` | `CURSOR_CP_INSTALL_DIR` | `~/.local/share/cursor-cp` | Install location |
-| `--no-setup` | — | — | Skip the setup wizard |
 | `--help` | — | — | Show usage |
 
 **Upgrading:** re-run the same one-liner. The installer detects the existing install,
@@ -373,7 +376,7 @@ All endpoints are served under the `/api` prefix.
 
 ```http
 GET /api/health
-# → { "status": "ok", "version": "0.1.0" }
+# → { "status": "ok", "version": "0.2.1" }
 
 GET /api/dashboard-config
 # → { "web_channel_key": "web:default", "workspace_root": "...", "default_model": "...", "max_sessions": 5 }

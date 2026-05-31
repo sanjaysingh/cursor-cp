@@ -39,10 +39,9 @@ describe('validateApiKey', () => {
     expect(validateApiKey('your_key_here').ok).toBe(false);
   });
 
-  it('accepts a cursor_ key without warning', () => {
-    const result = validateApiKey('cursor_abc');
-    expect(result.ok).toBe(true);
-    expect(result.warning).toBeUndefined();
+  it('accepts any non-empty, non-placeholder key', () => {
+    expect(validateApiKey('cursor_abc').ok).toBe(true);
+    expect(validateApiKey('crsr_abc123').ok).toBe(true);
   });
 });
 

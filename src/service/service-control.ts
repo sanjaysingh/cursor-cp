@@ -7,6 +7,24 @@ import { execSync } from 'child_process';
 import { dataDir, logsDir, projectHomeDir, serviceMarkerPath } from '../paths.js';
 
 const SERVICE_MARKER = serviceMarkerPath();
+const DEFAULT_INSTALL_DIR = resolve(homedir(), '.local/share/cursor-cp');
+
+function launchdDomain(): string {
+  const uid = process.getuid?.() ?? parseInt(execSync('id -u', { encoding: 'utf-8' }).trim(), 10);
+  return `gui/${uid}`;
+}
+
+function resolveNodePath(): string {
+  try {
+    return execSync('node -p process.execPath', { encoding: 'utf-8' }).trim();
+  } catch {
+    throw new Error('Node.js not found. Install Node.js 20+ and ensure it is on PATH.');
+  }
+}
+
+function resolveInstallDir(): string {
+  return process.env.CURSOR_CP_INSTALL_DIR?.trim() || DEFAULT_INSTALL_DIR;
+}
 
 interface ServiceMarker {
   type: 'systemd-user' | 'launchd';
@@ -55,11 +73,7 @@ export class ServiceController {
         });
         return output.trim() === 'active' ? 'running' : 'stopped';
       } else if (this.marker.type === 'launchd') {
-        const output = execSync(`launchctl list ${this.marker.label}`, {
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'ignore'],
-        });
-        return output.includes('"PID"') ? 'running' : 'stopped';
+        return this.isLaunchdRunning(this.marker.label!) ? 'running' : 'stopped';
       }
     } catch {
       return 'stopped';
@@ -80,10 +94,56 @@ export class ServiceController {
     }
   }
 
+  private isLaunchdRunning(label: string): boolean {
+    try {
+      const output = execSync(`launchctl print ${launchdDomain()}/${label}`, {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+      return /state = running/i.test(output);
+    } catch {
+      return false;
+    }
+  }
+
+  private launchdPlistPath(label: string): string {
+    return resolve(homedir(), 'Library/LaunchAgents', `${label}.plist`);
+  }
+
+  private bootoutLaunchd(label: string, plistPath: string): void {
+    try {
+      execSync(`launchctl bootout ${launchdDomain()}/${label}`, { stdio: 'pipe' });
+    } catch {
+      try {
+        execSync(`launchctl bootout ${launchdDomain()} ${plistPath}`, { stdio: 'pipe' });
+      } catch {
+        try {
+          execSync(`launchctl unload ${plistPath}`, { stdio: 'pipe' });
+        } catch {
+          // Ignore unload errors
+        }
+      }
+    }
+  }
+
+  private bootstrapLaunchd(label: string, plistPath: string): void {
+    this.bootoutLaunchd(label, plistPath);
+    try {
+      execSync(`launchctl bootstrap ${launchdDomain()} ${plistPath}`);
+    } catch {
+      execSync(`launchctl load ${plistPath}`);
+    }
+  }
+
+  private kickstartLaunchd(label: string): void {
+    execSync(`launchctl kickstart -k ${launchdDomain()}/${label}`);
+  }
+
   private async installLaunchd(): Promise<void> {
     const label = 'com.cursor.cp';
-    const plistPath = resolve(homedir(), 'Library/LaunchAgents', `${label}.plist`);
-    const binPath = resolve(homedir(), '.local/bin/cursor-cp');
+    const plistPath = this.launchdPlistPath(label);
+    const nodePath = resolveNodePath();
+    const cliPath = resolve(resolveInstallDir(), 'dist/cli/index.js');
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -93,7 +153,8 @@ export class ServiceController {
     <string>${label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${binPath}</string>
+        <string>${nodePath}</string>
+        <string>${cliPath}</string>
         <string>serve</string>
     </array>
     <key>EnvironmentVariables</key>
@@ -115,13 +176,14 @@ export class ServiceController {
 </plist>`;
 
     mkdirSync(resolve(homedir(), 'Library/LaunchAgents'), { recursive: true });
+    mkdirSync(logsDir(), { recursive: true });
     writeFileSync(plistPath, plist);
 
-    // Load the service
-    try {
-      execSync(`launchctl load ${plistPath}`);
-    } catch {
-      throw new Error('Failed to load launchd service');
+    this.bootstrapLaunchd(label, plistPath);
+    if (!this.isLaunchdRunning(label)) {
+      throw new Error(
+        'Failed to start launchd service. Check ~/cursor-cp/logs/service.error.log',
+      );
     }
 
     this.saveMarker({
@@ -188,8 +250,17 @@ WantedBy=default.target`;
     if (this.marker.type === 'systemd-user') {
       execSync(`systemctl --user start ${this.marker.unit}`);
     } else if (this.marker.type === 'launchd') {
-      const plistPath = resolve(homedir(), 'Library/LaunchAgents', `${this.marker.label}.plist`);
-      execSync(`launchctl load ${plistPath}`);
+      const label = this.marker.label!;
+      const plistPath = this.launchdPlistPath(label);
+      try {
+        this.kickstartLaunchd(label);
+      } catch {
+        this.bootstrapLaunchd(label, plistPath);
+      }
+    }
+
+    if (this.getStatus() !== 'running') {
+      throw new Error('Failed to start daemon. Check ~/cursor-cp/logs/service.error.log');
     }
 
     console.log('✅ Daemon started');
@@ -203,11 +274,8 @@ WantedBy=default.target`;
     if (this.marker.type === 'systemd-user') {
       execSync(`systemctl --user stop ${this.marker.unit}`);
     } else if (this.marker.type === 'launchd') {
-      try {
-        execSync(`launchctl unload ${resolve(homedir(), 'Library/LaunchAgents', `${this.marker.label}.plist`)}`);
-      } catch {
-        // Ignore unload errors
-      }
+      const label = this.marker.label!;
+      this.bootoutLaunchd(label, this.launchdPlistPath(label));
     }
 
     console.log('✅ Daemon stopped');
@@ -221,14 +289,15 @@ WantedBy=default.target`;
     if (this.marker.type === 'systemd-user') {
       execSync(`systemctl --user restart ${this.marker.unit}`);
     } else if (this.marker.type === 'launchd') {
-      const plistPath = resolve(homedir(), 'Library/LaunchAgents', `${this.marker.label}.plist`);
-      try {
-        execSync(`launchctl unload ${plistPath}`);
-      } catch {
-        // Ignore
-      }
+      const label = this.marker.label!;
+      const plistPath = this.launchdPlistPath(label);
+      this.bootoutLaunchd(label, plistPath);
       await new Promise((resolve) => setTimeout(resolve, 500));
-      execSync(`launchctl load ${plistPath}`);
+      this.bootstrapLaunchd(label, plistPath);
+    }
+
+    if (this.getStatus() !== 'running') {
+      throw new Error('Failed to restart daemon. Check ~/cursor-cp/logs/service.error.log');
     }
 
     console.log('✅ Service restarted');
@@ -258,7 +327,9 @@ WantedBy=default.target`;
         require('fs').unlinkSync(unitPath);
       }
     } else if (this.marker.type === 'launchd') {
-      const plistPath = resolve(homedir(), 'Library/LaunchAgents', `${this.marker.label}.plist`);
+      const label = this.marker.label!;
+      const plistPath = this.launchdPlistPath(label);
+      this.bootoutLaunchd(label, plistPath);
       if (existsSync(plistPath)) {
         require('fs').unlinkSync(plistPath);
       }
