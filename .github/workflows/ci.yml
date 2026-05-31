@@ -111,11 +111,9 @@ jobs:
       - run: npm run build
 
       - name: Start server and test health endpoint
-        env:
-          CURSOR_API_KEY: test-key-for-ci
-          PORT: 9999
         run: |
-          # Start server in background
+          cp config.default.yaml config.yaml
+          printf '\ncursor:\n  api_key: test-key-for-ci\nserver:\n  port: 9999\n' >> config.yaml
           node dist/index.js &
           SERVER_PID=$!
 

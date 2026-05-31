@@ -42,7 +42,7 @@ const mockConfig: AppConfig = {
   },
   server: {
     host: '0.0.0.0',
-    port: 8080,
+    port: 8747,
   },
   sdk: {
     defaultModel: 'composer-2',

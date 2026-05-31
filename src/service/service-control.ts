@@ -1,5 +1,5 @@
 /**
- * Service Control - Manage background service (systemd/launchd)
+ * Daemon control — manage background process (systemd/launchd)
  */
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
@@ -132,7 +132,7 @@ export class ServiceController {
       installDate: new Date().toISOString(),
     });
 
-    console.log('✅ Installed as macOS LaunchAgent');
+    console.log('✅ Daemon enabled (macOS LaunchAgent)');
     console.log(`   Plist: ${plistPath}`);
     console.log(`   Logs: ${logsDir()}/service.log`);
   }
@@ -177,14 +177,14 @@ WantedBy=default.target`;
       installDate: new Date().toISOString(),
     });
 
-    console.log('✅ Installed as systemd user service');
+    console.log('✅ Daemon enabled (systemd user service)');
     console.log(`   Unit: ${unitPath}`);
     console.log('   View logs: journalctl --user -u cursor-cp.service -f');
   }
 
   async start(): Promise<void> {
     if (!this.marker) {
-      throw new Error('Service not installed. Run: cursor-cp service install');
+      throw new Error('Daemon not enabled. Run: cursor-cp daemon enable');
     }
 
     if (this.marker.type === 'systemd-user') {
@@ -194,7 +194,7 @@ WantedBy=default.target`;
       execSync(`launchctl load ${plistPath}`);
     }
 
-    console.log('✅ Service started');
+    console.log('✅ Daemon started');
   }
 
   async stop(): Promise<void> {
@@ -212,12 +212,12 @@ WantedBy=default.target`;
       }
     }
 
-    console.log('✅ Service stopped');
+    console.log('✅ Daemon stopped');
   }
 
   async restart(): Promise<void> {
     if (!this.marker) {
-      throw new Error('Service not installed. Run: cursor-cp service install');
+      throw new Error('Daemon not enabled. Run: cursor-cp daemon enable');
     }
 
     if (this.marker.type === 'systemd-user') {
@@ -238,7 +238,7 @@ WantedBy=default.target`;
 
   async uninstall(): Promise<void> {
     if (!this.marker) {
-      console.log('No service installed');
+      console.log('Daemon not enabled');
       return;
     }
 
@@ -272,20 +272,20 @@ WantedBy=default.target`;
     }
     this.marker = null;
 
-    console.log('✅ Service uninstalled');
+    console.log('✅ Daemon disabled');
   }
 
   printStatus(): void {
     if (!this.marker) {
-      console.log('Service status: Not installed');
-      console.log('Run: cursor-cp service install');
+      console.log('Daemon status: Not enabled');
+      console.log('Run: cursor-cp daemon enable');
       return;
     }
 
     const status = this.getStatus();
-    console.log(`Service type: ${this.marker.type}`);
+    console.log(`Daemon type: ${this.marker.type}`);
     console.log(`Status: ${status}`);
-    console.log(`Installed: ${this.marker.installDate}`);
+    console.log(`Enabled since: ${this.marker.installDate}`);
 
     if (this.marker.type === 'systemd-user') {
       console.log(`Unit: ${this.marker.unit}`);
@@ -301,12 +301,15 @@ WantedBy=default.target`;
 }
 
 // CLI commands
-export async function runServiceCommand(command: string): Promise<void> {
+export async function runDaemonCommand(command: string): Promise<void> {
   const controller = new ServiceController();
 
   switch (command) {
-    case 'install':
+    case 'enable':
       await controller.install();
+      break;
+    case 'disable':
+      await controller.uninstall();
       break;
     case 'start':
       await controller.start();
@@ -320,11 +323,8 @@ export async function runServiceCommand(command: string): Promise<void> {
     case 'status':
       controller.printStatus();
       break;
-    case 'uninstall':
-      await controller.uninstall();
-      break;
     default:
-      console.log('Usage: cursor-cp service [install|start|stop|restart|status|uninstall]');
+      console.log('Usage: cursor-cp daemon [enable|disable|start|stop|restart|status]');
       process.exit(1);
   }
 }

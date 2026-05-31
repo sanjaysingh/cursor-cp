@@ -2,13 +2,14 @@
  * CLI Commands
  */
 
-import { runServiceCommand } from '../service/service-control.js';
-import { resolve } from 'path';
-import { getEnvFilePath, getProjectRoot, loadEnvFiles } from '../config/env.js';
+import { runDaemonCommand } from '../service/service-control.js';
+import { userConfigPath, projectConfigPath } from '../config/home.js';
+import { loadConfig } from '../config/loader.js';
+import { runSetup } from './setup.js';
+import { runDoctor } from './doctor.js';
 
 const commands: Record<string, (args: string[]) => Promise<void>> = {
   async serve() {
-    loadEnvFiles();
     await import('../index.js');
   },
 
@@ -16,62 +17,70 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     await commands.serve([]);
   },
 
-  async config() {
-    const envPath = getEnvFilePath();
-    const configPath = resolve(getProjectRoot(), 'config.yaml');
-
-    console.log('Configuration files:');
-    console.log(`  Environment: ${envPath}`);
-    console.log(`  Config: ${configPath}`);
-    console.log();
-
-    try {
-      loadEnvFiles();
-      const { loadConfig } = await import('../config/loader.js');
-      const { config, env } = loadConfig();
-
-      console.log('Current Settings:');
-      console.log(`  Workspace: ${config.workspaceRoot}`);
-      console.log(`  Server: ${config.server.host}:${config.server.port}`);
-      console.log(`  Default Model: ${config.sdk.defaultModel}`);
-      console.log(`  Telegram: ${config.channels.telegram.enabled ? 'enabled' : 'disabled'}`);
-      console.log(`  Web: ${config.channels.web.enabled ? 'enabled' : 'disabled'}`);
-      console.log(`  API Key: ${env.cursorApiKey ? 'configured' : 'NOT SET'}`);
-    } catch (err) {
-      console.log('Could not load configuration:', err instanceof Error ? err.message : String(err));
-    }
+  async setup(args: string[]) {
+    await runSetup(args);
   },
 
-  async service(args: string[]) {
+  async onboard(args: string[]) {
+    await runSetup(args);
+  },
+
+  async doctor() {
+    await runDoctor();
+  },
+
+  async config() {
+    const { config, defaultPath, overridePaths } = loadConfig();
+
+    console.log('Configuration:');
+    console.log(`  Defaults:  ${defaultPath}`);
+    if (overridePaths.length > 0) {
+      for (const path of overridePaths) {
+        console.log(`  Overrides: ${path}`);
+      }
+    } else {
+      console.log(`  Overrides: (none — copy config.default.yaml to ${userConfigPath()})`);
+    }
+    console.log();
+
+    console.log('Effective settings:');
+    console.log(`  Workspace: ${config.workspaceRoot}`);
+    console.log(`  Server: ${config.server.host}:${config.server.port}`);
+    console.log(`  Default Model: ${config.sdk.defaultModel}`);
+    console.log(`  Telegram: ${config.channels.telegram.enabled ? 'enabled' : 'disabled'}`);
+    console.log(`  Web: ${config.channels.web.enabled ? 'enabled' : 'disabled'}`);
+    console.log(`  Log level: ${config.logging.level}`);
+    console.log(`  API Key: ${config.cursorApiKey ? 'configured' : 'NOT SET'}`);
+    console.log();
+    console.log(`Edit ${userConfigPath()} (or ${projectConfigPath()} when developing) then restart.`);
+  },
+
+  async daemon(args: string[]) {
     const command = args[0] || 'status';
-    await runServiceCommand(command);
+    await runDaemonCommand(command);
   },
 
   async help() {
     console.log(`
-Cursor Control Plane CLI
+Cursor Control Plane
 
-Commands:
-  serve          Start the server
-  start          Alias for serve
-  config         Show current configuration
-  service        Manage background service (install/start/stop/restart/status/uninstall)
+Usage: cursor-cp [command]
+
+Common commands:
+  setup          Configure cursor-cp (writes ~/cursor-cp/config.yaml)
+  serve          Start the server (default)
+  doctor         Check your installation for problems
+  config         Show the current configuration
   help           Show this help message
 
-Service Commands:
-  cursor-cp service install    Install as system service
-  cursor-cp service start      Start background service
-  cursor-cp service stop       Stop background service
-  cursor-cp service restart    Restart background service
-  cursor-cp service status     Show service status
-  cursor-cp service uninstall  Remove system service
+Advanced:
+  daemon enable|disable|start|stop|restart|status
+                 Run cursor-cp in the background (systemd / launchd)
 
 Examples:
-  cursor-cp serve
-  cursor-cp service install
-  cursor-cp config
-
-Project root: ${getProjectRoot()}
+  cursor-cp setup        # first-run configuration
+  cursor-cp              # start the server
+  cursor-cp doctor       # diagnose issues
 `);
   },
 };
@@ -99,7 +108,6 @@ export async function runCLI(args: string[]): Promise<void> {
   await handler(args.slice(1));
 }
 
-// Run if called directly
 if (import.meta.url === `file://${process.argv[1]}`) {
   runCLI(process.argv.slice(2)).catch((err) => {
     console.error(err);

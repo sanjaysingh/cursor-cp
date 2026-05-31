@@ -1,0 +1,34 @@
+# Cursor Control Plane — default configuration
+#
+# Copy config.default.yaml to config.yaml and edit your overrides there.
+# config.yaml is not committed (see .gitignore).
+#
+# After editing: cursor-cp daemon restart  (or cursor-cp for foreground)
+#
+# Get a Cursor API key: https://cursor.com/dashboard/cloud-agents
+
+cursor:
+  api_key: ""
+
+server:
+  host: 0.0.0.0
+  port: 8747
+
+sdk:
+  default_model: "composer-2.5"
+  max_sessions: 5
+
+channels:
+  telegram:
+    enabled: false
+    bot_token: ""
+    allowed_user_ids: []
+  web:
+    enabled: true
+
+logging:
+  level: info
+  # file: false               # omit = daily logs under ~/cursor-cp/logs
+
+repos: []
+# workspace_root: ~/cursor-cp/ws-root

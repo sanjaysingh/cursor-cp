@@ -56,15 +56,19 @@ curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.
 
 That's the supported install method. It performs a per-user install (no `sudo`,
 everything inside your home directory): it clones the project to
-`~/.local/share/cursor-cp`, installs dependencies, builds it, writes your
-configuration, and adds a `cursor-cp` launcher to `~/.local/bin`. You'll be prompted
-for your Cursor API key.
+`~/.local/share/cursor-cp`, installs dependencies, builds it, and adds a `cursor-cp`
+launcher to `~/.local/bin`. It then launches an interactive **setup wizard** that
+collects your Cursor API key, default model, port, and optional Telegram bot, and
+offers to enable the background daemon.
 
-Then start it:
+When setup finishes, start it (or it's already running if you enabled the daemon):
 
 ```bash
-cursor-cp        # serve at http://localhost:8080
+cursor-cp        # serve at http://localhost:8747
 ```
+
+You can re-run the wizard anytime with `cursor-cp setup`, and verify your install with
+`cursor-cp doctor`.
 
 > **Prefer to clone and run from source?** See [Development](#development).
 
@@ -76,12 +80,8 @@ cursor-cp        # serve at http://localhost:8080
 curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh | bash
 ```
 
-For a fully non-interactive install (no prompt), set the API key first:
-
-```bash
-export CURSOR_API_KEY="cursor_..."
-curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh | bash
-```
+On an interactive terminal the installer runs `cursor-cp setup` automatically.
+To skip configuration and run the wizard later, pass `--no-setup`.
 
 Pass options through the pipe with `bash -s --`:
 
@@ -97,92 +97,104 @@ You can also download and run it directly (`bash install.sh [options]`).
 |------|----------------------|---------|-------------|
 | `--version <ref>` | `CURSOR_CP_VERSION` | `latest` (main) | Git tag/branch to install |
 | `--dir <path>` | `CURSOR_CP_INSTALL_DIR` | `~/.local/share/cursor-cp` | Install location |
+| `--no-setup` | — | — | Skip the setup wizard |
 | `--help` | — | — | Show usage |
 
 **Upgrading:** re-run the same one-liner. The installer detects the existing install,
 fetches and checks out the requested version, reinstalls dependencies, and rebuilds.
-Your `.env` is preserved.
+Your configuration in `~/cursor-cp/` is never touched.
 
-### After installing
+### Configuring and running
 
 ```bash
-# Start the server in the foreground
-cursor-cp
-
-# Or run it as a per-user background service (systemd --user / launchd)
-cursor-cp service install
-cursor-cp service status
+cursor-cp setup     # interactive wizard: API key, model, port, Telegram, daemon
+cursor-cp           # start the server in the foreground
+cursor-cp doctor    # check your installation for problems
 ```
+
+`cursor-cp setup` can also enable a per-user background daemon (systemd `--user` on
+Linux, launchd on macOS) so the server starts on login. To manage the daemon
+directly, use the advanced `cursor-cp daemon enable|disable|start|stop|restart|status`
+commands.
 
 If `~/.local/bin` is not on your `PATH`, the installer prints the line to add to your
 shell profile.
 
 ### Runtime layout
 
-All runtime data lives under `~/cursor-cp/` (override with `CURSOR_CP_HOME`):
+All runtime data lives under `~/cursor-cp/`:
 
 ```
 ~/cursor-cp/
-├── ws-root/   cloned repositories / agent working directories
-├── logs/      daily JSON logs (cursor-cp-YYYY-MM-DD.log, kept 7 days)
-└── data/      SQLite database (cursor-cp.db) and service metadata
+├── config.yaml   your settings (created from config.default.yaml on install)
+├── ws-root/      cloned repositories / agent working directories
+├── logs/         daily JSON logs (cursor-cp-YYYY-MM-DD.log, kept 7 days)
+└── data/         SQLite database (cursor-cp.db) and daemon metadata
 ```
+
+Shipped defaults live in the install directory as `config.default.yaml` (never edit this file directly).
 
 ## Configuration
 
-Configuration is resolved with the following precedence (highest first):
+Settings use two YAML files:
 
-1. Environment variables (and `.env` in the project root)
-2. `config.yaml` in the project root
-3. Built-in defaults
+| File | Location | Committed? | Purpose |
+|------|----------|------------|---------|
+| `config.default.yaml` | install / source tree | yes | shipped defaults |
+| `config.yaml` | `~/cursor-cp/` (or project root when developing) | no | your overrides |
 
-### Environment variables
+`config.yaml` is merged on top of `config.default.yaml`. Only values you set in `config.yaml` replace the defaults — everything else falls through.
 
-| Variable | Description | Required | Default |
-|----------|-------------|----------|---------|
-| `CURSOR_API_KEY` | Cursor API key | **Yes** | — |
-| `PORT` | HTTP server port | No | `8080` |
-| `HOST` | HTTP server host | No | `0.0.0.0` |
-| `WORKSPACE_ROOT` | Directory for cloned repos / agent workspaces | No | `~/cursor-cp/ws-root` |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token (enables the bot when set and configured) | No | — |
-| `TELEGRAM_ALLOWED_USER_IDS` | Comma/space-separated Telegram user IDs allowed to use the bot | No | — |
-| `LOG_LEVEL` | Log level (`debug`, `info`, `warn`, `error`) | No | `info` |
-| `LOG_FILE` | Base path for daily log files; set to `false` to disable file logging | No | `~/cursor-cp/logs/cursor-cp.log` |
-| `CURSOR_CP_HOME` | Root directory for all runtime data | No | `~/cursor-cp` |
-| `CURSOR_CP_DB_PATH` | Override the SQLite database path | No | `~/cursor-cp/data/cursor-cp.db` |
-| `CONFIG_PATH` | Override the path to `config.yaml` | No | `<project>/config.yaml` |
+On install, `~/cursor-cp/config.yaml` is created automatically as a copy of `config.default.yaml`. Run `cursor-cp setup` to fill in your API key and other settings interactively, or edit the file by hand. Secrets (`cursor.api_key`, Telegram token) are stored in `config.yaml` with `chmod 600`.
 
-Console logging is always enabled; daily file logging is on by default.
+When developing from source, copy defaults into the project root:
 
-### Config file (`config.yaml`)
+```bash
+cp config.default.yaml config.yaml   # then set cursor.api_key
+```
+
+Project-root `config.yaml` is gitignored and overrides `~/cursor-cp/config.yaml` when present.
+
+**After editing, restart to apply:**
+
+```bash
+cursor-cp daemon restart   # background
+cursor-cp                    # foreground
+```
+
+### Example overrides (`config.yaml`)
+
+See [`config.default.yaml`](config.default.yaml) for the full template. Typical overrides:
 
 ```yaml
-# Repositories pinned to the top of the picker
-repos:
-  - name: my-project
-    path: /path/to/project
-    description: My awesome project
+cursor:
+  api_key: "cursor_..."       # required
 
-# Override the default workspace location (env WORKSPACE_ROOT takes precedence)
-# workspace_root: /custom/workspace
+server:
+  host: 0.0.0.0
+  port: 8747
 
-# Channel toggles
+sdk:
+  default_model: "composer-2.5"
+  max_sessions: 5
+
 channels:
   telegram:
-    enabled: false   # also requires TELEGRAM_BOT_TOKEN
+    enabled: false
+    bot_token: ""
+    allowed_user_ids: []
   web:
     enabled: true
 
-# Server settings (env PORT/HOST take precedence)
-server:
-  host: 0.0.0.0
-  port: 8080
+logging:
+  level: info
+  # file: false               # omit = daily logs under ~/cursor-cp/logs
 
-# Cursor SDK settings
-sdk:
-  default_model: "composer-2.5"   # empty lets the SDK choose
-  max_sessions: 5                 # maximum concurrent sessions
+repos: []
+# workspace_root: ~/cursor-cp/ws-root
 ```
+
+Console logging is always enabled; daily file logging is on by default.
 
 ## Architecture
 
@@ -236,14 +248,14 @@ flowchart TB
 src/
 ├── api/        # Fastify routes + WebSocket registration
 ├── channels/   # Communication adapters (web, Telegram) + registry
-├── config/     # Environment and YAML configuration loading
+├── config/     # YAML configuration loading
 ├── core/       # Business logic: AgentService, SessionManager, EventBus, repo picker
 ├── db/         # SQLite connection and repositories
 ├── format/     # Markdown → Telegram formatting
 ├── models/     # TypeScript types and Zod schemas
-├── service/    # systemd/launchd service control
+├── service/    # systemd/launchd daemon control
 ├── util/       # Logger and daily log rotation
-├── cli/        # CLI entry point (serve, config, service)
+├── cli/        # CLI: serve, setup wizard, doctor, config, daemon
 ├── paths.ts    # Runtime path resolution
 └── index.ts    # Application entry point
 static/         # Web dashboard (Alpine.js + Tailwind via CDN)
@@ -255,7 +267,8 @@ static/         # Web dashboard (Alpine.js + Tailwind via CDN)
 git clone https://github.com/sanjaysingh/cursor-cp.git
 cd cursor-cp
 npm install
-cp .env.example .env   # then set CURSOR_API_KEY
+cp config.default.yaml config.yaml   # then set cursor.api_key
+npm run dev
 ```
 
 ### Commands
@@ -333,9 +346,8 @@ Connect to `/api/ws` for real-time updates. Send `{ "type": "ping" }` to receive
 
 ## Telegram Bot
 
-Set `TELEGRAM_BOT_TOKEN`, list the allowed user IDs in `TELEGRAM_ALLOWED_USER_IDS`,
-and enable the channel in `config.yaml` (`channels.telegram.enabled: true`). The bot
-exposes the following commands:
+Set `channels.telegram.enabled: true`, add `bot_token` and your user ID(s) in
+`allowed_user_ids` in `config.yaml`. The bot exposes the following commands:
 
 | Command | Description |
 |---------|-------------|
@@ -349,21 +361,18 @@ exposes the following commands:
 | `/workspaces` | Browse local workspace folders |
 
 Any other text is sent to the active session. Only users listed in
-`TELEGRAM_ALLOWED_USER_IDS` are allowed to interact with the bot.
+`channels.telegram.allowed_user_ids` are allowed to interact with the bot.
 
 ## Troubleshooting
 
-**`CURSOR_API_KEY is required`** — Set the key in your environment or `.env`:
+**`cursor.api_key is required`** — Run the setup wizard, or set the key in config:
 
 ```bash
-export CURSOR_API_KEY="cursor_..."
+cursor-cp setup
+# or edit ~/cursor-cp/config.yaml (cursor.api_key)
 ```
 
-**Port already in use** — Start on a different port:
-
-```bash
-PORT=8081 npm run dev
-```
+**Port already in use** — Change `server.port` in `config.yaml` and restart.
 
 **GitHub features unavailable** — Install and authenticate the GitHub CLI:
 
@@ -371,11 +380,7 @@ PORT=8081 npm run dev
 gh auth login
 ```
 
-**Verbose logging** — Run with debug logs:
-
-```bash
-LOG_LEVEL=debug npm run dev
-```
+**Verbose logging** — Set `logging.level: debug` in `config.yaml` and restart.
 
 ## Contributing
 

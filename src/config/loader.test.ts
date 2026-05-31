@@ -6,92 +6,66 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, unlinkSync, mkdirSync, rmdirSync } from 'fs';
 import { resolve } from 'path';
 import { tmpdir } from 'os';
-import { loadConfig } from './loader.js';
+import { deepMerge, loadConfigFromPaths } from './loader.js';
 import { defaultWorkspaceRoot } from '../paths.js';
 
-describe('loadConfig', () => {
-  const originalEnv = process.env;
-  let configPath: string;
+describe('deepMerge', () => {
+  it('merges nested objects and replaces scalars', () => {
+    const base = { server: { host: '0.0.0.0', port: 8747 }, cursor: { api_key: '' } };
+    const override = { cursor: { api_key: 'cursor_abc' }, server: { port: 9000 } };
+    const merged = deepMerge(base, override);
+    expect(merged).toEqual({
+      server: { host: '0.0.0.0', port: 9000 },
+      cursor: { api_key: 'cursor_abc' },
+    });
+  });
+});
+
+describe('loadConfigFromPaths', () => {
   let tempDir: string;
+  let defaultPath: string;
+  let overridePath: string;
 
   beforeEach(() => {
     tempDir = resolve(tmpdir(), `config-test-${Date.now()}`);
     mkdirSync(tempDir, { recursive: true });
-    configPath = resolve(tempDir, 'test-config.yaml');
-    process.env = { ...originalEnv };
-    delete process.env.CURSOR_API_KEY;
-    delete process.env.WORKSPACE_ROOT;
-    delete process.env.CONFIG_PATH;
-    delete process.env.HOST;
-    delete process.env.PORT;
+    defaultPath = resolve(tempDir, 'config.default.yaml');
+    overridePath = resolve(tempDir, 'config.yaml');
   });
 
   afterEach(() => {
-    process.env = originalEnv;
-    try {
-      unlinkSync(configPath);
-    } catch { /* ignore */ }
+    for (const path of [defaultPath, overridePath]) {
+      try {
+        unlinkSync(path);
+      } catch { /* ignore */ }
+    }
     try {
       rmdirSync(tempDir);
     } catch { /* ignore */ }
   });
 
-  it('should load default config when file does not exist', () => {
-    process.env.CONFIG_PATH = configPath;
-    const { config } = loadConfig();
-
-    expect(config.server.host).toBe('0.0.0.0');
-    expect(config.server.port).toBe(8080);
-    expect(config.sdk.defaultModel).toBe('composer-2.5');
-    expect(config.sdk.maxSessions).toBe(5);
+  it('loads defaults when no override exists', () => {
+    writeFileSync(defaultPath, 'server:\n  port: 8747\n');
+    const { config } = loadConfigFromPaths(defaultPath, [overridePath]);
+    expect(config.server.port).toBe(8747);
     expect(config.workspaceRoot).toBe(defaultWorkspaceRoot());
   });
 
-  it('should load config from file', () => {
-    const yaml = `
-server:
-  host: 127.0.0.1
-  port: 3000
-sdk:
-  default_model: gpt-4
-  max_sessions: 3
-`;
-    writeFileSync(configPath, yaml);
-    process.env.CONFIG_PATH = configPath;
+  it('merges override onto defaults', () => {
+    writeFileSync(defaultPath, 'server:\n  host: 0.0.0.0\n  port: 8747\nsdk:\n  default_model: composer-2.5\n');
+    writeFileSync(
+      overridePath,
+      `cursor:\n  api_key: file-key\nserver:\n  port: 3000\nchannels:\n  telegram:\n    bot_token: tok\n    allowed_user_ids: [1]\n`
+    );
 
-    const { config } = loadConfig();
+    const { config, overridePaths } = loadConfigFromPaths(defaultPath, [overridePath]);
 
-    expect(config.server.host).toBe('127.0.0.1');
+    expect(overridePaths).toEqual([overridePath]);
+    expect(config.cursorApiKey).toBe('file-key');
+    expect(config.server.host).toBe('0.0.0.0');
     expect(config.server.port).toBe(3000);
-    expect(config.sdk.defaultModel).toBe('gpt-4');
-    expect(config.sdk.maxSessions).toBe(3);
-  });
-
-  it('should use environment variables', () => {
-    process.env.CURSOR_API_KEY = 'test-api-key';
-    process.env.WORKSPACE_ROOT = '/custom/workspace';
-    process.env.PORT = '9000';
-    process.env.HOST = 'localhost';
-
-    const { config, env } = loadConfig();
-
-    expect(env.cursorApiKey).toBe('test-api-key');
-    expect(config.workspaceRoot).toBe(resolve('/custom/workspace'));
-    expect(config.server.port).toBe(9000);
-    expect(config.server.host).toBe('localhost');
-  });
-
-  it('should merge env over config file', () => {
-    const yaml = `
-server:
-  port: 3000
-`;
-    writeFileSync(configPath, yaml);
-    process.env.CONFIG_PATH = configPath;
-    process.env.PORT = '5000';
-
-    const { config } = loadConfig();
-
-    expect(config.server.port).toBe(5000);
+    expect(config.sdk.defaultModel).toBe('composer-2.5');
+    expect(config.channels.telegram.botToken).toBe('tok');
+    expect(config.channels.telegram.allowedUserIds).toEqual([1]);
   });
 });

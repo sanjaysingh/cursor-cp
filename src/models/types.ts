@@ -61,6 +61,11 @@ export interface ChannelConfig {
   enabled: boolean;
 }
 
+export interface TelegramChannelConfig extends ChannelConfig {
+  botToken: string;
+  allowedUserIds: number[];
+}
+
 export interface ServerConfig {
   host: string;
   port: number;
@@ -71,15 +76,25 @@ export interface SdkConfig {
   maxSessions: number;
 }
 
+/** null = default daily log file; empty string = disabled; otherwise custom base path */
+export type LogFileSetting = string | null;
+
+export interface LoggingConfig {
+  level: string;
+  file: LogFileSetting;
+}
+
 export interface AppConfig {
+  cursorApiKey: string;
   repos: RepoEntry[];
   workspaceRoot: string;
   channels: {
-    telegram: ChannelConfig;
+    telegram: TelegramChannelConfig;
     web: ChannelConfig;
   };
   server: ServerConfig;
   sdk: SdkConfig;
+  logging: LoggingConfig;
 }
 
 export type EventType =

@@ -2,9 +2,10 @@
  * Tests for runtime paths
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { writeFileSync, unlinkSync, mkdirSync, rmdirSync } from 'fs';
 import { resolve } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { dailyLogPath, LOG_RETENTION_DAYS } from './util/daily-log-stream.js';
 import {
   dataDir,
@@ -15,15 +16,9 @@ import {
   projectHomeDir,
   resolveLogFilePath,
 } from './paths.js';
+import { loadConfigFromPaths } from './config/loader.js';
 
 describe('paths', () => {
-  beforeEach(() => {
-    delete process.env.LOG_FILE;
-    delete process.env.CURSOR_CP_LOG_FILE;
-    delete process.env.CURSOR_CP_HOME;
-    delete process.env.CURSOR_CP_DB_PATH;
-  });
-
   it('expands home in paths', () => {
     expect(expandHome('~/tmp/logs/app.log')).toBe(resolve(homedir(), 'tmp/logs/app.log'));
   });
@@ -39,20 +34,48 @@ describe('paths', () => {
     expect(logsDir()).toBe(resolve(home, 'logs'));
     expect(defaultLogFilePath()).toBe(resolve(home, 'logs', 'cursor-cp.log'));
   });
+});
 
-  it('honours CURSOR_CP_HOME override', () => {
-    process.env.CURSOR_CP_HOME = '~/custom-cp';
-    expect(projectHomeDir()).toBe(resolve(homedir(), 'custom-cp'));
-    expect(defaultWorkspaceRoot()).toBe(resolve(homedir(), 'custom-cp', 'ws-root'));
+describe('resolveLogFilePath', () => {
+  let tempDir: string;
+  let defaultPath: string;
+  let overridePath: string;
+
+  beforeEach(() => {
+    tempDir = resolve(tmpdir(), `paths-log-test-${Date.now()}`);
+    mkdirSync(tempDir, { recursive: true });
+    defaultPath = resolve(tempDir, 'config.default.yaml');
+    overridePath = resolve(tempDir, 'config.yaml');
   });
 
-  it('disables file logging when LOG_FILE=false', () => {
-    process.env.LOG_FILE = 'false';
+  afterEach(() => {
+    for (const path of [defaultPath, overridePath]) {
+      try {
+        unlinkSync(path);
+      } catch { /* ignore */ }
+    }
+    try {
+      rmdirSync(tempDir);
+    } catch { /* ignore */ }
+  });
+
+  it('uses default log path when logging.file is unset', () => {
+    writeFileSync(defaultPath, 'logging:\n  level: info\n');
+    loadConfigFromPaths(defaultPath, []);
+    expect(resolveLogFilePath()).toBe(defaultLogFilePath());
+  });
+
+  it('disables file logging when logging.file is false', () => {
+    writeFileSync(defaultPath, 'logging:\n  level: info\n');
+    writeFileSync(overridePath, 'logging:\n  file: false\n');
+    loadConfigFromPaths(defaultPath, [overridePath]);
     expect(resolveLogFilePath()).toBeNull();
   });
 
-  it('uses custom LOG_FILE path when set', () => {
-    process.env.LOG_FILE = '~/custom/app.log';
+  it('uses custom logging.file path when set', () => {
+    writeFileSync(defaultPath, 'logging:\n  level: info\n');
+    writeFileSync(overridePath, 'logging:\n  file: ~/custom/app.log\n');
+    loadConfigFromPaths(defaultPath, [overridePath]);
     expect(resolveLogFilePath()).toBe(resolve(homedir(), 'custom/app.log'));
   });
 });

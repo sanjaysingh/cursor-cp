@@ -15,10 +15,10 @@ Thank you for your interest in contributing! This document provides guidelines f
    npm install
    ```
 
-3. **Setup environment**
+3. **Configure**
    ```bash
-   cp .env.example .env.local
-   # Edit .env.local with your settings
+   cp config.default.yaml config.yaml
+   # Edit config.yaml — set cursor.api_key at minimum
    ```
 
 4. **Verify setup**

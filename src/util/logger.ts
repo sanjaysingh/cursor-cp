@@ -1,13 +1,12 @@
 /**
  * Shared application logger (pino).
- * Set LOG_LEVEL=debug for verbose SDK/agent output.
  *
- * JSON output uses string levels ("info", "error", …) and local timestamps.
- * Logs go to stdout and, by default, daily files under the user data directory.
+ * Call initLogging() after loadConfig() so level and file path come from config.yaml.
  */
 
 import pino, { type Logger, type LoggerOptions } from 'pino';
 import type { FastifyLoggerOptions } from 'fastify';
+import type { LoggingConfig } from '../models/types.js';
 import { resolveLogFilePath } from '../paths.js';
 import { createDailyLogStream } from './daily-log-stream.js';
 
@@ -31,9 +30,17 @@ export function formatLocalTimestamp(date = new Date()): string {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${millis} ${sign}${offsetHours}:${offsetMins}`;
 }
 
-export function createLoggerOptions(): LoggerOptions {
+let loggingConfig: LoggingConfig = { level: 'info', file: null };
+let loggerInstance: Logger | undefined;
+
+export function initLogging(config: LoggingConfig): void {
+  loggingConfig = config;
+  loggerInstance = undefined;
+}
+
+function createLoggerOptions(): LoggerOptions {
   return {
-    level: process.env.LOG_LEVEL ?? 'info',
+    level: loggingConfig.level || 'info',
     formatters: {
       level(label) {
         return { level: label };
@@ -76,8 +83,6 @@ export function createFastifyLoggerConfig(): FastifyLoggerOptions {
   };
 }
 
-let loggerInstance: Logger | undefined;
-
 export function getLogger(): Logger {
   if (!loggerInstance) {
     loggerInstance = buildLogger();
@@ -90,6 +95,13 @@ export function getLogFilePath(): string | null {
   return resolveLogFilePath();
 }
 
-export const logger = getLogger();
+/** Lazy logger — safe to import before loadConfig(); initLogging() resets the instance. */
+export const logger: Logger = new Proxy({} as Logger, {
+  get(_target, prop, receiver) {
+    const instance = getLogger();
+    const value = Reflect.get(instance, prop, receiver);
+    return typeof value === 'function' ? value.bind(instance) : value;
+  },
+});
 
 export type { Logger };
