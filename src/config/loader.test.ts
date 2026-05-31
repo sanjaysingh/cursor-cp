@@ -7,6 +7,7 @@ import { writeFileSync, unlinkSync, mkdirSync, rmdirSync } from 'fs';
 import { resolve } from 'path';
 import { tmpdir } from 'os';
 import { loadConfig } from './loader.js';
+import { defaultWorkspaceRoot } from '../paths.js';
 
 describe('loadConfig', () => {
   const originalEnv = process.env;
@@ -43,6 +44,7 @@ describe('loadConfig', () => {
     expect(config.server.port).toBe(8080);
     expect(config.sdk.defaultModel).toBe('composer-2.5');
     expect(config.sdk.maxSessions).toBe(5);
+    expect(config.workspaceRoot).toBe(defaultWorkspaceRoot());
   });
 
   it('should load config from file', () => {
@@ -74,7 +76,7 @@ sdk:
     const { config, env } = loadConfig();
 
     expect(env.cursorApiKey).toBe('test-api-key');
-    expect(config.workspaceRoot).toBe('/custom/workspace');
+    expect(config.workspaceRoot).toBe(resolve('/custom/workspace'));
     expect(config.server.port).toBe(9000);
     expect(config.server.host).toBe('localhost');
   });

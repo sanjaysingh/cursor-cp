@@ -2,15 +2,10 @@
  * SQLite database connection using better-sqlite3
  */
 
-import Database from 'better-sqlite3';
 import { resolve } from 'path';
-import { homedir } from 'os';
 import { existsSync, mkdirSync } from 'fs';
-
-export interface DatabaseConnection {
-  db: Database.Database;
-  close(): void;
-}
+import Database from 'better-sqlite3';
+import { databasePath } from '../paths.js';
 
 export interface DatabaseConnection {
   db: Database.Database;
@@ -18,12 +13,7 @@ export interface DatabaseConnection {
 }
 
 export function createDatabaseConnection(): DatabaseConnection {
-  // Store DB in workspace or default location
-  const workspaceRoot = process.env.WORKSPACE_ROOT
-    ? resolve(process.env.WORKSPACE_ROOT.replace(/^~/, homedir()))
-    : resolve(homedir(), 'cursor-cp-workspace');
-
-  const dbPath = resolve(workspaceRoot, 'data', 'cursor-cp.db');
+  const dbPath = databasePath();
   const dbDir = resolve(dbPath, '..');
 
   // Ensure directory exists
@@ -62,6 +52,7 @@ function runMigrations(db: Database.Database): void {
       title TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'open',
       model TEXT,
+      sdk_agent_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       closed_at TEXT
@@ -97,6 +88,14 @@ function runMigrations(db: Database.Database): void {
   `;
 
   db.exec(schema);
+  migrateAgentSessions(db);
+}
+
+function migrateAgentSessions(db: Database.Database): void {
+  const columns = db.prepare('PRAGMA table_info(agent_sessions)').all() as Array<{ name: string }>;
+  if (!columns.some((c) => c.name === 'sdk_agent_id')) {
+    db.exec('ALTER TABLE agent_sessions ADD COLUMN sdk_agent_id TEXT');
+  }
 }
 
 export function resetConnection(): void {

@@ -47,6 +47,7 @@ export async function registerRoutes(
     web_channel_key: WEB_CHANNEL_KEY,
     workspace_root: config.workspaceRoot,
     default_model: sessionManager.getDefaultModel(),
+    max_sessions: config.sdk.maxSessions,
   }));
 
   // List available models

@@ -10,6 +10,7 @@ import type { SessionRepository, MessageRepository, ParticipantRepository, Setti
 import { AgentService } from './agent-service.js';
 import { EventBus } from './events.js';
 import type { Channel, ChannelRegistry } from '../channels/base.js';
+import { logger } from '../util/logger.js';
 
 export class SessionLimitError extends Error {
   constructor(max: number) {
@@ -59,9 +60,11 @@ export class SessionManager {
     this.maxSessions = options.maxSessions;
     this.defaultModel = options.defaultModel;
 
-    // Set up streaming callback
+    // Only stream assistant text to clients — skip tool/thinking/status noise
     this.agentService.onStream((sessionId, chunk) => {
-      this.handleStreamChunk(sessionId, chunk.text);
+      if (chunk.type === 'text') {
+        this.handleStreamChunk(sessionId, chunk.text);
+      }
     });
 
     // Set up question handler - CRITICAL FIX: Pass full question context
@@ -146,7 +149,7 @@ export class SessionManager {
           }
         }
       } catch (err) {
-        console.error('Error handling agent question:', err);
+        logger.error({ err, sessionId }, 'Error handling agent question');
       }
     }
 
@@ -165,12 +168,113 @@ export class SessionManager {
     // Emit to event bus for real-time streaming
     await this.eventBus.emit({
       type: 'agent_stream',
-      sessionId,
+      session_id: sessionId,
       text,
     });
 
     // Update session in DB
     this.sessions.touch(sessionId);
+  }
+
+  /**
+   * Send assistant output to non-web participants (Telegram, etc.).
+   * Web clients receive real-time chunks via agent_stream on the event bus.
+   */
+  private async deliverToParticipants(sessionId: string, text: string): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    const participants = this.participants.listBySession(sessionId);
+    for (const participant of participants) {
+      if (participant.channel === 'web') continue;
+
+      const channel = this.registry.get(participant.channel);
+      if (!channel) {
+        logger.warn(
+          { sessionId, channel: participant.channel },
+          'No channel registered for participant delivery'
+        );
+        continue;
+      }
+
+      try {
+        await channel.sendMessage(participant.conversationId, trimmed);
+        logger.info(
+          {
+            sessionId,
+            channel: participant.channel,
+            conversationId: participant.conversationId,
+            chars: trimmed.length,
+          },
+          'Delivered assistant response to participant'
+        );
+      } catch (err) {
+        logger.error(
+          { err, sessionId, channel: participant.channel, conversationId: participant.conversationId },
+          'Failed to deliver assistant response to participant'
+        );
+      }
+    }
+  }
+
+  /**
+   * Ensure the Cursor SDK agent exists in memory (resume after restart, or create).
+   */
+  private async ensureAgentReady(session: Session): Promise<Session> {
+    let managed = this.managedSessions.get(session.id);
+    if (!managed) {
+      managed = { ...session };
+      this.managedSessions.set(session.id, managed);
+    } else {
+      managed.sdkAgentId = session.sdkAgentId ?? managed.sdkAgentId;
+      managed.repoPath = session.repoPath || managed.repoPath;
+      managed.model = session.model ?? managed.model;
+    }
+
+    if (this.agentService.getSession(session.id)) {
+      return managed;
+    }
+
+    const workspacePath = managed.repoPath || process.cwd();
+    managed.activity = 'connecting';
+    managed.errorMessage = null;
+
+    try {
+      if (managed.sdkAgentId) {
+        try {
+          const agentSession = await this.agentService.resumeSession(
+            session.id,
+            managed.sdkAgentId,
+            workspacePath,
+            managed.model
+          );
+          managed.sdkAgentId = agentSession.sdkAgentId;
+          this.sessions.updateSdkAgentId(session.id, agentSession.sdkAgentId);
+          managed.activity = 'idle';
+          return managed;
+        } catch (err) {
+          logger.warn(
+            { err, sessionId: session.id, sdkAgentId: managed.sdkAgentId },
+            'Agent resume failed, creating new SDK agent'
+          );
+        }
+      }
+
+      const agentSession = await this.agentService.createSession(
+        session.id,
+        workspacePath,
+        managed.model
+      );
+      managed.sdkAgentId = agentSession.sdkAgentId;
+      this.sessions.updateSdkAgentId(session.id, agentSession.sdkAgentId);
+      managed.activity = 'idle';
+      return managed;
+    } catch (err) {
+      managed.activity = 'error';
+      managed.errorMessage = err instanceof Error ? err.message : String(err);
+      logger.error({ err, sessionId: session.id }, 'Failed to ensure agent session');
+      throw err;
+    }
   }
 
   async createSession(
@@ -200,6 +304,7 @@ export class SessionManager {
       status: 'open',
       activity: 'idle',
       model: effectiveModel,
+      sdkAgentId: null,
       createdAt: now,
       updatedAt: now,
       closedAt: null,
@@ -209,6 +314,11 @@ export class SessionManager {
 
     this.sessions.insert(session);
     this.managedSessions.set(sessionId, session);
+
+    logger.info(
+      { sessionId, channel, channelKey, repoPath: repoPath || process.cwd(), model: effectiveModel },
+      'Session created'
+    );
 
     // Add creator as participant
     this.participants.ensure({
@@ -221,11 +331,18 @@ export class SessionManager {
     // Create agent session
     try {
       session.activity = 'connecting';
-      await this.agentService.createSession(sessionId, repoPath || process.cwd(), effectiveModel);
+      const agentSession = await this.agentService.createSession(
+        sessionId,
+        repoPath || process.cwd(),
+        effectiveModel
+      );
+      session.sdkAgentId = agentSession.sdkAgentId;
+      this.sessions.updateSdkAgentId(sessionId, agentSession.sdkAgentId);
       session.activity = 'idle';
     } catch (err) {
       session.activity = 'error';
       session.errorMessage = err instanceof Error ? err.message : String(err);
+      logger.error({ err, sessionId }, 'Failed to create agent session');
     }
 
     await this.eventBus.emit({
@@ -242,7 +359,7 @@ export class SessionManager {
     participantChannel?: string,
     participantConversationId?: string
   ): Promise<Session> {
-    const session = this.managedSessions.get(sessionId) ?? this.sessions.findById(sessionId);
+    let session = this.managedSessions.get(sessionId) ?? this.sessions.findById(sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
     }
@@ -265,9 +382,16 @@ export class SessionManager {
       this.sessions.updateStatus(sessionId, 'open');
     }
 
+    session = await this.ensureAgentReady(session);
+
     // Store user message
     this.messages.insert(sessionId, 'user', text);
     this.sessions.touch(sessionId);
+
+    logger.info(
+      { sessionId, channel: participantChannel, textLength: text.length },
+      'Sending user message to agent'
+    );
 
     // Send to agent
     session.activity = 'running';
@@ -282,18 +406,35 @@ export class SessionManager {
       const result = await this.agentService.sendPrompt(sessionId, text);
 
       if (result.success) {
-        // Store assistant response
-        if (result.text) {
-          this.messages.insert(sessionId, 'assistant', result.text.slice(0, 20000));
+        const streamed = session.outputPreview.trim();
+        const resultText = result.text.trim();
+        const summary = streamed || resultText;
+
+        if (summary) {
+          this.messages.insert(sessionId, 'assistant', summary.slice(0, 20000));
         }
         session.errorMessage = null;
+
+        // Non-web channels do not receive agent_stream — deliver the full reply here.
+        if (summary) {
+          await this.deliverToParticipants(sessionId, summary);
+        }
       } else {
         session.errorMessage = result.error ?? null;
         session.activity = 'error';
+        logger.warn({ sessionId, error: result.error }, 'Agent returned error');
+        if (result.error) {
+          await this.deliverToParticipants(sessionId, `Agent error: ${result.error}`);
+        }
       }
     } catch (err) {
       session.errorMessage = err instanceof Error ? err.message : String(err);
       session.activity = 'error';
+      logger.error({ err, sessionId }, 'sendSessionMessage failed');
+      await this.deliverToParticipants(
+        sessionId,
+        `Agent error: ${session.errorMessage}`
+      );
     } finally {
       if (session.activity === 'running') {
         session.activity = 'idle';
@@ -359,7 +500,7 @@ export class SessionManager {
       await this.eventBus.emit({
         type: 'channel_message',
         channel: p.channel,
-        conversationId: p.conversationId,
+        conversation_id: p.conversationId,
         text: 'Session closed. The agent process was stopped.',
       });
     }
@@ -372,7 +513,7 @@ export class SessionManager {
 
     await this.eventBus.emit({
       type: 'session_removed',
-      sessionId,
+      session_id: sessionId,
     });
 
     return true;
@@ -413,15 +554,13 @@ export class SessionManager {
       joinedAt: new Date().toISOString(),
     });
 
-    const managed = this.managedSessions.get(sessionId);
-    if (managed) {
-      await this.eventBus.emit({
-        type: 'session_updated',
-        session: this.toPublicSession(managed),
-      });
-    }
+    const ready = await this.ensureAgentReady(session);
+    await this.eventBus.emit({
+      type: 'session_updated',
+      session: this.toPublicSession(ready),
+    });
 
-    return session;
+    return ready;
   }
 
   listSessions(channel: string, channelKey: string, includeClosed = false): Session[] {

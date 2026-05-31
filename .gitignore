@@ -144,7 +144,13 @@ vite.config.ts.timestamp-*
 
 # Workspace data
 cursor-cp-workspace/
+# Local runtime data (when using default ~/cursor-cp layout)
+# Uncomment if you symlink or create these inside the repo during dev:
+# cursor-cp/
 data/
 *.db
 *.db-shm
 *.db-wal
+
+# Stray "~" directory created when a literal "~" path is used by a shell
+/~/

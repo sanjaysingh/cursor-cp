@@ -38,7 +38,7 @@ export class WebChannel implements Channel {
     await this.eventBus.emit({
       type: 'channel_message',
       channel: this.name,
-      conversationId,
+      conversation_id: conversationId,
       text,
     });
   }
@@ -73,8 +73,8 @@ export class WebChannel implements Channel {
       this.eventBus.emit({
         type: 'question',
         channel: this.name,
-        conversationId,
-        sessionId: target.sessionId,
+        conversation_id: conversationId,
+        session_id: target.sessionId,
         question,
         options,
       }).catch(() => {});

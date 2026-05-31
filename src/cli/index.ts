@@ -2,21 +2,13 @@
  * CLI Commands
  */
 
-import { runSetupWizard, ensureSetup } from './setup-wizard.js';
 import { runServiceCommand } from '../service/service-control.js';
 import { resolve } from 'path';
-import { homedir } from 'os';
-
-const DATA_DIR = resolve(homedir(), '.config', 'cursor-cp');
+import { getEnvFilePath, getProjectRoot, loadEnvFiles } from '../config/env.js';
 
 const commands: Record<string, (args: string[]) => Promise<void>> = {
-  async setup() {
-    await runSetupWizard(DATA_DIR);
-  },
-
   async serve() {
-    await ensureSetup(DATA_DIR);
-    // Import and start server
+    loadEnvFiles();
     await import('../index.js');
   },
 
@@ -25,16 +17,16 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
   },
 
   async config() {
-    const envPath = resolve(DATA_DIR, '.env');
-    const configPath = resolve(DATA_DIR, 'config.yaml');
+    const envPath = getEnvFilePath();
+    const configPath = resolve(getProjectRoot(), 'config.yaml');
 
     console.log('Configuration files:');
     console.log(`  Environment: ${envPath}`);
     console.log(`  Config: ${configPath}`);
     console.log();
 
-    // Print current config
     try {
+      loadEnvFiles();
       const { loadConfig } = await import('../config/loader.js');
       const { config, env } = loadConfig();
 
@@ -60,8 +52,7 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
 Cursor Control Plane CLI
 
 Commands:
-  setup          Run interactive setup wizard
-  serve          Start the server (runs setup if needed)
+  serve          Start the server
   start          Alias for serve
   config         Show current configuration
   service        Manage background service (install/start/stop/restart/status/uninstall)
@@ -76,12 +67,11 @@ Service Commands:
   cursor-cp service uninstall  Remove system service
 
 Examples:
-  cursor-cp setup
   cursor-cp serve
   cursor-cp service install
   cursor-cp config
 
-Configuration directory: ${DATA_DIR}
+Project root: ${getProjectRoot()}
 `);
   },
 };

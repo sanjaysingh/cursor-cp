@@ -5,7 +5,7 @@ repos: []
 
 channels:
   telegram:
-    enabled: false
+    enabled: true
   web:
     enabled: true
 

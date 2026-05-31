@@ -10,9 +10,7 @@ export function registerWebSocket(
   fastify: FastifyInstance,
   eventBus: EventBus
 ): void {
-  fastify.get('/ws', { websocket: true }, (connection, _req) => {
-    const socket = connection.socket;
-
+  fastify.get('/ws', { websocket: true }, (socket, _req) => {
     // Handler for events
     const handleEvent = (event: AppEvent): void => {
       try {

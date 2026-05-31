@@ -31,7 +31,7 @@ describe('WebChannel', () => {
     expect(received).toBeDefined();
     expect(received?.type).toBe('channel_message');
     expect(received?.channel).toBe('web');
-    expect(received?.conversationId).toBe('conv-1');
+    expect(received?.conversation_id).toBe('conv-1');
     expect(received?.text).toBe('Hello world');
   });
 

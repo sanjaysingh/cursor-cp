@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Fastify from 'fastify';
-import { registerRoutes } from './routes.js';
+import { registerApi, API_PREFIX } from './register-api.js';
 import type { SessionManager } from '../core/session-manager.js';
 import type { AgentService } from '../core/agent-service.js';
 import type { WebChannel } from '../channels/web-channel.js';
@@ -52,13 +52,18 @@ const mockConfig: AppConfig = {
 
 async function buildApp(webChannel?: WebChannel) {
   const app = Fastify();
-  await registerRoutes(app, {
+  await registerApi(app, {
+    eventBus: { on: vi.fn(), emit: vi.fn() } as never,
     sessionManager: mockSessionManager,
     agentService: mockAgentService,
     webChannel,
     config: mockConfig,
   });
   return app;
+}
+
+function apiUrl(path: string): string {
+  return `${API_PREFIX}${path}`;
 }
 
 describe('API Routes', () => {
@@ -71,7 +76,7 @@ describe('API Routes', () => {
       const app = await buildApp(mockWebChannel);
       const response = await app.inject({
         method: 'GET',
-        url: '/health',
+        url: apiUrl('/health'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -89,7 +94,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/dashboard-config',
+        url: apiUrl('/dashboard-config'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -97,6 +102,7 @@ describe('API Routes', () => {
       expect(payload.web_channel_key).toBe('web:default');
       expect(payload.workspace_root).toBe('/tmp/test-workspace');
       expect(payload.default_model).toBe('composer-2');
+      expect(payload.max_sessions).toBe(5);
     });
   });
 
@@ -110,7 +116,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/models',
+        url: apiUrl('/models'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -128,7 +134,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'PUT',
-        url: '/settings/default-model',
+        url: apiUrl('/settings/default-model'),
         payload: { model: 'composer-1' },
       });
 
@@ -144,7 +150,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'PUT',
-        url: '/settings/default-model',
+        url: apiUrl('/settings/default-model'),
         payload: { model: '' },
       });
 
@@ -160,7 +166,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/workspaces',
+        url: apiUrl('/workspaces'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -176,7 +182,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/github/repos',
+        url: apiUrl('/github/repos'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -193,7 +199,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/repo-picker',
+        url: apiUrl('/repo-picker'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -227,7 +233,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/sessions',
+        url: apiUrl('/sessions'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -243,7 +249,7 @@ describe('API Routes', () => {
 
       await app.inject({
         method: 'GET',
-        url: '/sessions?include_closed=true',
+        url: apiUrl('/sessions?include_closed=true'),
       });
 
       expect(mockSessionManager.listAllSessions).toHaveBeenCalledWith(true);
@@ -273,7 +279,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions',
+        url: apiUrl('/sessions'),
         payload: {
           title: 'New Session',
           model: 'composer-2',
@@ -298,7 +304,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions',
+        url: apiUrl('/sessions'),
         payload: { title: 'Test' },
       });
 
@@ -315,7 +321,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/close-all',
+        url: apiUrl('/sessions/close-all'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -348,7 +354,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/sessions/s1',
+        url: apiUrl('/sessions/s1'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -361,7 +367,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/sessions/nonexistent',
+        url: apiUrl('/sessions/nonexistent'),
       });
 
       expect(response.statusCode).toBe(404);
@@ -393,7 +399,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/s1/join',
+        url: apiUrl('/sessions/s1/join'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -406,7 +412,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/nonexistent/join',
+        url: apiUrl('/sessions/nonexistent/join'),
       });
 
       expect(response.statusCode).toBe(404);
@@ -436,7 +442,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/s1/message',
+        url: apiUrl('/sessions/s1/message'),
         payload: { text: 'Hello' },
       });
 
@@ -456,7 +462,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/s1/message',
+        url: apiUrl('/sessions/s1/message'),
         payload: { text: 'Hello' },
       });
 
@@ -471,7 +477,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/s1/close',
+        url: apiUrl('/sessions/s1/close'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -486,7 +492,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/nonexistent/close',
+        url: apiUrl('/sessions/nonexistent/close'),
       });
 
       expect(response.statusCode).toBe(404);
@@ -500,7 +506,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/s1/answer',
+        url: apiUrl('/sessions/s1/answer'),
         payload: { answer: 'Yes' },
       });
 
@@ -514,7 +520,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/s1/answer',
+        url: apiUrl('/sessions/s1/answer'),
         payload: { answer: 'Yes' },
       });
 
@@ -526,7 +532,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/s1/answer',
+        url: apiUrl('/sessions/s1/answer'),
         payload: { answer: 'Yes' },
       });
 
@@ -544,7 +550,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/runs',
+        url: apiUrl('/runs'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -575,7 +581,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/runs',
+        url: apiUrl('/runs'),
         payload: {
           conversationId: 'c1',
           prompt: 'Test prompt',
@@ -595,7 +601,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/runs/s1/stop',
+        url: apiUrl('/runs/s1/stop'),
       });
 
       expect(response.statusCode).toBe(200);
@@ -609,7 +615,7 @@ describe('API Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/runs/s1/answer',
+        url: apiUrl('/runs/s1/answer'),
         payload: { answer: 'Option A' },
       });
 

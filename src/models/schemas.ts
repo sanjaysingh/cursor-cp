@@ -7,7 +7,7 @@ import { z } from 'zod';
 export const CreateSessionRequest = z.object({
   repoPath: z.string().optional(),
   title: z.string().default(''),
-  model: z.string().optional(),
+  model: z.string().nullable().optional(),
 });
 
 export type CreateSessionRequest = z.infer<typeof CreateSessionRequest>;
@@ -32,7 +32,7 @@ export const CloneRepoRequest = z.object({
 export type CloneRepoRequest = z.infer<typeof CloneRepoRequest>;
 
 export const UpdateDefaultModelRequest = z.object({
-  model: z.string().optional(),
+  model: z.string().nullable().optional(),
 });
 
 export type UpdateDefaultModelRequest = z.infer<typeof UpdateDefaultModelRequest>;

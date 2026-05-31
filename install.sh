@@ -1,459 +1,269 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# Cursor Control Plane Installation Script
-# Supports macOS and Linux
+# Cursor Control Plane installer (per-user, no sudo).
+#
+# Clones (or upgrades) the project, installs dependencies, builds it, writes your
+# configuration, and adds a `cursor-cp` launcher to ~/.local/bin.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh | bash
+#   bash install.sh [--version <ref>] [--dir <path>] [--help]
 #
 
-set -e
+# Must run under bash (the one-liner pipes to `bash`). Fail clearly under sh/dash.
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "This installer requires bash. Re-run it with:" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh | bash" >&2
+    exit 1
+fi
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+set -euo pipefail
 
-# Configuration
-REPO_URL="https://github.com/sanjaysingh/cursor-cp"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.cursor-cp}"
-WORKSPACE_DIR="${WORKSPACE_DIR:-$HOME/cursor-cp-workspace}"
-DATA_DIR="${DATA_DIR:-$HOME/.config/cursor-cp}"
-VERSION="${VERSION:-latest}"
-SILENT=false
-UPGRADE=false
+# --- Settings ---------------------------------------------------------------
 
-# Logging functions
-log() {
-    if [ "$SILENT" = false ]; then
-        echo -e "${BLUE}[cursor-cp]${NC} $1"
-    fi
-}
+readonly REPO_URL="https://github.com/sanjaysingh/cursor-cp.git"
+readonly MIN_NODE_MAJOR=20
 
-warn() {
-    if [ "$SILENT" = false ]; then
-        echo -e "${YELLOW}[warning]${NC} $1"
-    fi
-}
+INSTALL_DIR="${CURSOR_CP_INSTALL_DIR:-$HOME/.local/share/cursor-cp}"
+VERSION="${CURSOR_CP_VERSION:-latest}"
+BIN_DIR="$HOME/.local/bin"
+LAUNCHER="$BIN_DIR/cursor-cp"
 
-error() {
-    echo -e "${RED}[error]${NC} $1" >&2
-}
+# --- Output helpers ---------------------------------------------------------
 
-success() {
-    if [ "$SILENT" = false ]; then
-        echo -e "${GREEN}[success]${NC} $1"
-    fi
-}
+if [ -t 1 ]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+fi
 
-# Parse arguments
-parse_args() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            --silent)
-                SILENT=true
-                shift
-                ;;
-            --version)
-                VERSION="$2"
-                shift 2
-                ;;
-            --upgrade)
-                UPGRADE=true
-                shift
-                ;;
-            --help|-h)
-                cat << 'EOF'
-Cursor Control Plane Installer
+log()     { printf '%s[cursor-cp]%s %s\n' "$BLUE" "$NC" "$1"; }
+warn()    { printf '%s[warning]%s %s\n' "$YELLOW" "$NC" "$1" >&2; }
+success() { printf '%s[ok]%s %s\n' "$GREEN" "$NC" "$1"; }
+die()     { printf '%s[error]%s %s\n' "$RED" "$NC" "$1" >&2; exit 1; }
+
+usage() {
+    cat <<EOF
+Cursor Control Plane installer
 
 Usage: install.sh [OPTIONS]
 
 Options:
-    --silent          Non-interactive mode (requires CURSOR_API_KEY env var)
-    --version TAG     Install specific version (default: latest)
-    --upgrade         Upgrade existing installation
-    --help, -h        Show this help message
+  --version <ref>   Git tag or branch to install (default: latest / main)
+  --dir <path>      Install directory (default: ~/.local/share/cursor-cp)
+  --help, -h        Show this help
 
-Environment Variables:
-    CURSOR_API_KEY    Required API key (or will prompt in interactive mode)
-    INSTALL_DIR       Installation directory (default: ~/.cursor-cp)
-    WORKSPACE_DIR     Workspace for repositories (default: ~/cursor-cp-workspace)
-    DATA_DIR          Data/config directory (default: ~/.config/cursor-cp)
-
-Examples:
-    # Interactive install
-    bash install.sh
-
-    # Silent install
-    export CURSOR_API_KEY="your-key"
-    bash install.sh --silent
-
-    # Upgrade existing
-    bash install.sh --upgrade
-
-    # Specific version
-    bash install.sh --version v0.1.0
-
+Environment:
+  CURSOR_API_KEY          Cursor API key (prompted if unset and running interactively)
+  CURSOR_CP_VERSION       Same as --version
+  CURSOR_CP_INSTALL_DIR   Same as --dir
 EOF
-                exit 0
-                ;;
-            *)
-                error "Unknown option: $1"
-                exit 1
-                ;;
-        esac
-    done
 }
 
-# Check prerequisites
+# --- Argument parsing -------------------------------------------------------
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version) [ $# -ge 2 ] || die "--version requires a value"; VERSION="$2"; shift 2 ;;
+        --dir)     [ $# -ge 2 ] || die "--dir requires a value"; INSTALL_DIR="$2"; shift 2 ;;
+        --help|-h) usage; exit 0 ;;
+        *)         die "Unknown option: $1 (try --help)" ;;
+    esac
+done
+
+LAUNCHER="$BIN_DIR/cursor-cp"
+
+# --- Prerequisite checks ----------------------------------------------------
+
 check_prerequisites() {
     log "Checking prerequisites..."
 
-    # Check OS
     case "$(uname -s)" in
-        Linux*)     OS=Linux;;
-        Darwin*)    OS=Mac;;
-        *)          error "Unsupported OS: $(uname -s)"; exit 1;;
+        Linux*|Darwin*) ;;
+        *) die "Unsupported OS: $(uname -s). This installer supports Linux and macOS." ;;
     esac
 
-    # Check Node.js
-    if ! command -v node &> /dev/null; then
-        error "Node.js is not installed. Please install Node.js 20+ and try again."
-        error "Visit: https://nodejs.org/"
-        exit 1
-    fi
+    command -v git  >/dev/null 2>&1 || die "git is required. Install it and try again."
+    command -v node >/dev/null 2>&1 || die "Node.js ${MIN_NODE_MAJOR}+ is required: https://nodejs.org/"
+    command -v npm  >/dev/null 2>&1 || die "npm is required (it ships with Node.js)."
 
-    NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-    if [ "$NODE_VERSION" -lt 20 ]; then
-        error "Node.js 20+ is required. Found: $(node -v)"
-        exit 1
+    local node_major
+    node_major="$(node -p 'process.versions.node.split(".")[0]')"
+    if [ "$node_major" -lt "$MIN_NODE_MAJOR" ]; then
+        die "Node.js ${MIN_NODE_MAJOR}+ is required. Found $(node -v)."
     fi
-
     log "Found Node.js $(node -v)"
 
-    # Check npm
-    if ! command -v npm &> /dev/null; then
-        error "npm is not installed"
-        exit 1
-    fi
+    command -v gh >/dev/null 2>&1 || warn "GitHub CLI (gh) not found — GitHub repo browsing/cloning will be disabled."
+}
 
-    # Check git
-    if ! command -v git &> /dev/null; then
-        warn "git is not installed. Repository cloning will not be available."
-    fi
+# --- Install / upgrade ------------------------------------------------------
 
-    # Check GitHub CLI
-    if ! command -v gh &> /dev/null; then
-        warn "GitHub CLI (gh) is not installed. GitHub integration will be limited."
-        if [ "$SILENT" = false ]; then
-            read -p "Install gh CLI? (y/N) " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                install_gh_cli
-            fi
+clone_or_update() {
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        log "Upgrading existing install at $INSTALL_DIR"
+        git -C "$INSTALL_DIR" fetch --tags --prune origin
+        if [ "$VERSION" = "latest" ]; then
+            git -C "$INSTALL_DIR" checkout main >/dev/null 2>&1 || git -C "$INSTALL_DIR" checkout master
+            git -C "$INSTALL_DIR" pull --ff-only origin "$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD)"
+        else
+            git -C "$INSTALL_DIR" checkout "$VERSION"
+        fi
+    elif [ -e "$INSTALL_DIR" ]; then
+        die "$INSTALL_DIR exists but is not a git checkout. Remove it or pass --dir <path>."
+    else
+        log "Cloning into $INSTALL_DIR"
+        mkdir -p "$(dirname "$INSTALL_DIR")"
+        git clone "$REPO_URL" "$INSTALL_DIR"
+        if [ "$VERSION" != "latest" ]; then
+            git -C "$INSTALL_DIR" checkout "$VERSION"
         fi
     fi
 }
 
-# Install GitHub CLI
-install_gh_cli() {
-    case "$OS" in
-        Mac)
-            if command -v brew &> /dev/null; then
-                brew install gh
-            else
-                warn "Homebrew not found. Please install gh manually:"
-                warn "https://cli.github.com/"
-            fi
-            ;;
-        Linux)
-            if command -v apt-get &> /dev/null; then
-                curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-                sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-                echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-                sudo apt-get update
-                sudo apt-get install -y gh
-            elif command -v yum &> /dev/null; then
-                sudo yum install -y gh
-            else
-                warn "Please install gh manually: https://cli.github.com/"
-            fi
-            ;;
-    esac
+build_app() {
+    log "Installing dependencies..."
+    if [ -f "$INSTALL_DIR/package-lock.json" ]; then
+        ( cd "$INSTALL_DIR" && npm ci )
+    else
+        ( cd "$INSTALL_DIR" && npm install )
+    fi
+
+    log "Building..."
+    ( cd "$INSTALL_DIR" && npm run build )
 }
 
-# Get API key
-get_api_key() {
-    if [ -n "$CURSOR_API_KEY" ]; then
+# --- API key ----------------------------------------------------------------
+
+prompt() {
+    # Read a value even when stdin is a pipe (curl | bash), using the terminal.
+    local message="$1" silent="${2:-}" reply
+    if [ -r /dev/tty ]; then
+        if [ "$silent" = "silent" ]; then
+            printf '%s' "$message" > /dev/tty
+            read -rs reply < /dev/tty
+            printf '\n' > /dev/tty
+        else
+            printf '%s' "$message" > /dev/tty
+            read -r reply < /dev/tty
+        fi
+        printf '%s' "$reply"
+    fi
+}
+
+resolve_api_key() {
+    if [ -n "${CURSOR_API_KEY:-}" ]; then
         API_KEY="$CURSOR_API_KEY"
         return
     fi
 
-    if [ "$SILENT" = true ]; then
-        error "CURSOR_API_KEY environment variable is required in silent mode"
-        exit 1
-    fi
-
-    echo
-    echo "To use Cursor Control Plane, you need a Cursor API key."
-    echo "Get one at: https://cursor.com/dashboard/cloud-agents"
-    echo
-
-    while true; do
-        read -s -p "Enter your Cursor API key: " API_KEY
-        echo
-
-        if [ -z "$API_KEY" ]; then
-            error "API key cannot be empty"
-            continue
-        fi
-
-        if [[ "$API_KEY" == cursor_* ]]; then
-            break
-        else
-            warn "API key should start with 'cursor_'"
-            read -p "Continue anyway? (y/N) " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                break
-            fi
-        fi
-    done
-}
-
-# Download/install
-download_install() {
-    log "Installing Cursor Control Plane..."
-
-    # Create directories
-    mkdir -p "$INSTALL_DIR"
-    mkdir -p "$WORKSPACE_DIR"
-    mkdir -p "$DATA_DIR"
-
-    if [ "$UPGRADE" = true ] && [ -d "$INSTALL_DIR/.git" ]; then
-        log "Upgrading existing installation..."
-        cd "$INSTALL_DIR"
-        git fetch origin
-        if [ "$VERSION" = "latest" ]; then
-            git checkout main
-            git pull origin main
-        else
-            git checkout "$VERSION"
-        fi
-    else
-        log "Cloning repository..."
-        if [ -d "$INSTALL_DIR/.git" ]; then
-            rm -rf "$INSTALL_DIR"
-        fi
-        git clone --depth 1 "$REPO_URL.git" "$INSTALL_DIR"
-        cd "$INSTALL_DIR"
-
-        if [ "$VERSION" != "latest" ]; then
-            git fetch --tags
-            git checkout "$VERSION"
+    # Reuse an existing key if one is already configured.
+    if [ -f "$INSTALL_DIR/.env" ] && grep -q '^CURSOR_API_KEY=..*' "$INSTALL_DIR/.env"; then
+        local existing
+        existing="$(grep '^CURSOR_API_KEY=' "$INSTALL_DIR/.env" | head -n1 | cut -d= -f2-)"
+        if [ -n "$existing" ] && [ "${existing#your_}" = "$existing" ]; then
+            API_KEY="$existing"
+            log "Reusing the API key from the existing .env"
+            return
         fi
     fi
 
-    log "Installing dependencies..."
-    cd "$INSTALL_DIR"
-    npm ci
-
-    log "Building application..."
-    npm run build
-
-    success "Installation complete!"
-}
-
-# Create environment file
-setup_environment() {
-    log "Setting up environment..."
-
-    cat > "$DATA_DIR/.env" << EOF
-# Cursor Control Plane Environment Configuration
-# Generated by install.sh on $(date)
-
-# Required: Cursor API Key
-# Get from: https://cursor.com/dashboard/cloud-agents
-CURSOR_API_KEY=$API_KEY
-
-# Workspace directory for repositories
-WORKSPACE_ROOT=$WORKSPACE_DIR
-
-# Server configuration
-PORT=8080
-HOST=0.0.0.0
-
-# Data directory
-DATA_DIR=$DATA_DIR
-
-# Logging
-LOG_LEVEL=info
-EOF
-
-    # Create config.yaml
-    cat > "$DATA_DIR/config.yaml" << EOF
-repos: []
-
-workspace_root: "$WORKSPACE_DIR"
-
-channels:
-  telegram:
-    enabled: false
-  web:
-    enabled: true
-
-server:
-  host: 0.0.0.0
-  port: 8080
-
-sdk:
-  default_model: "composer-2.5"
-  max_sessions: 5
-EOF
-
-    # Create symlink for easy access
-    mkdir -p "$HOME/.local/bin"
-    cat > "$HOME/.local/bin/cursor-cp" << 'EOF'
-#!/bin/bash
-DATA_DIR="${DATA_DIR:-$HOME/.config/cursor-cp}"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.cursor-cp}"
-export $(cat "$DATA_DIR/.env" | xargs)
-cd "$INSTALL_DIR"
-exec node dist/index.js "$@"
-EOF
-    chmod +x "$HOME/.local/bin/cursor-cp"
-
-    success "Environment configured"
-}
-
-# Setup service
-setup_service() {
-    if [ "$SILENT" = true ]; then
-        return
+    if [ ! -r /dev/tty ]; then
+        die "CURSOR_API_KEY is not set and no terminal is available to prompt.
+Set it and re-run, e.g.:  export CURSOR_API_KEY=cursor_...  &&  bash install.sh"
     fi
 
-    case "$OS" in
-        Linux)
-            if command -v systemctl &> /dev/null; then
-                log "Setting up systemd service..."
-
-                cat > /tmp/cursor-cp.service << EOF
-[Unit]
-Description=Cursor Control Plane
-After=network.target
-
-[Service]
-Type=simple
-User=$USER
-Environment=NODE_ENV=production
-EnvironmentFile=$DATA_DIR/.env
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$HOME/.local/bin/cursor-cp
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-                echo
-                echo "To install as a system service, run:"
-                echo "  sudo mv /tmp/cursor-cp.service /etc/systemd/system/"
-                echo "  sudo systemctl daemon-reload"
-                echo "  sudo systemctl enable cursor-cp"
-                echo "  sudo systemctl start cursor-cp"
-                echo
-            fi
-            ;;
-        Mac)
-            log "Setting up launchd service..."
-
-            cat > "$HOME/Library/LaunchAgents/com.cursor.cp.plist" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.cursor.cp</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$HOME/.local/bin/cursor-cp</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>NODE_ENV</key>
-        <string>production</string>
-    </dict>
-    <key>WorkingDirectory</key>
-    <string>$INSTALL_DIR</string>
-    <key>StandardOutPath</key>
-    <string>$DATA_DIR/service.log</string>
-    <key>StandardErrorPath</key>
-    <string>$DATA_DIR/service.error.log</string>
-    <key>KeepAlive</key>
-    <true/>
-    <key>RunAtLoad</key>
-    <true/>
-</dict>
-</plist>
-EOF
-
-            launchctl load "$HOME/Library/LaunchAgents/com.cursor.cp.plist" 2>/dev/null || true
-            success "Launchd service configured"
-            ;;
+    printf '\nA Cursor API key is required. Get one at:\n  https://cursor.com/dashboard/cloud-agents\n\n' > /dev/tty
+    API_KEY="$(prompt 'Enter your Cursor API key: ' silent)"
+    [ -n "$API_KEY" ] || die "No API key entered."
+    case "$API_KEY" in
+        cursor_*) ;;
+        *) warn "Key does not start with 'cursor_' — continuing anyway." ;;
     esac
 }
 
-# Print final instructions
-print_instructions() {
-    if [ "$SILENT" = true ]; then
-        return
-    fi
+# --- Configuration ----------------------------------------------------------
 
-    echo
-    echo "╔══════════════════════════════════════════════════════════╗"
-    echo "║     Cursor Control Plane Installation Complete!          ║"
-    echo "╠══════════════════════════════════════════════════════════╣"
-    echo "║                                                          ║"
-    echo "║  Installation Directory: $INSTALL_DIR"
-    echo "║  Workspace Directory:    $WORKSPACE_DIR"
-    echo "║  Data Directory:         $DATA_DIR"
-    echo "║                                                          ║"
-    echo "║  Start the server:                                      ║"
-    echo "║    cursor-cp                                           ║"
-    echo "║    # or                                                ║"
-    echo "║    cd $INSTALL_DIR && npm run dev                     ║"
-    echo "║                                                          ║"
-    echo "║  Open in browser:                                       ║"
-    echo "║    http://localhost:8080                               ║"
-    echo "║                                                          ║"
-    echo "╚══════════════════════════════════════════════════════════╝"
-    echo
+write_env() {
+    local env_file="$INSTALL_DIR/.env"
+    if [ -f "$env_file" ]; then
+        # Update the key in place; leave the rest of the user's file untouched.
+        local tmp
+        tmp="$(mktemp)"
+        if grep -q '^CURSOR_API_KEY=' "$env_file"; then
+            sed "s|^CURSOR_API_KEY=.*|CURSOR_API_KEY=${API_KEY}|" "$env_file" > "$tmp"
+        else
+            cat "$env_file" > "$tmp"
+            printf 'CURSOR_API_KEY=%s\n' "$API_KEY" >> "$tmp"
+        fi
+        mv "$tmp" "$env_file"
+        log "Updated $env_file"
+    else
+        cat > "$env_file" <<EOF
+# Cursor Control Plane configuration (generated by install.sh)
 
-    # Start the server?
-    read -p "Start the server now? (Y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-        log "Starting Cursor Control Plane..."
-        echo "Press Ctrl+C to stop"
-        echo
-        cd "$INSTALL_DIR" && exec node dist/index.js
+# Required: get a key at https://cursor.com/dashboard/cloud-agents
+CURSOR_API_KEY=${API_KEY}
+
+# Server
+PORT=8080
+HOST=0.0.0.0
+
+# Logging: debug | info | warn | error
+LOG_LEVEL=info
+EOF
+        log "Wrote $env_file"
     fi
+    chmod 600 "$env_file" 2>/dev/null || true
 }
 
-# Main
+create_launcher() {
+    mkdir -p "$BIN_DIR"
+    cat > "$LAUNCHER" <<EOF
+#!/usr/bin/env bash
+# Cursor Control Plane launcher (generated by install.sh)
+exec node "${INSTALL_DIR}/dist/cli/index.js" "\$@"
+EOF
+    chmod +x "$LAUNCHER"
+    log "Installed launcher at $LAUNCHER"
+}
+
+# --- Final summary ----------------------------------------------------------
+
+print_summary() {
+    success "Cursor Control Plane installed."
+    printf '\n'
+    printf '  Install dir : %s\n' "$INSTALL_DIR"
+    printf '  Launcher    : %s\n' "$LAUNCHER"
+    printf '  Data dir    : %s\n' "${CURSOR_CP_HOME:-$HOME/cursor-cp}"
+    printf '\n'
+
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *) warn "$BIN_DIR is not on your PATH. Add this to your shell profile:
+    export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+    esac
+
+    cat <<EOF
+Next steps:
+  cursor-cp                  # start the server (http://localhost:8080)
+  cursor-cp service install  # optional: run as a background user service
+  cursor-cp --help           # all commands
+
+EOF
+}
+
+# --- Main -------------------------------------------------------------------
+
 main() {
-    parse_args "$@"
-
-    echo
-    echo "Cursor Control Plane Installer"
-    echo "=============================="
-    echo
-
+    printf '%sCursor Control Plane installer%s\n\n' "$BLUE" "$NC"
     check_prerequisites
-    get_api_key
-    download_install
-    setup_environment
-    setup_service
-    print_instructions
+    clone_or_update
+    build_app
+    resolve_api_key
+    write_env
+    create_launcher
+    print_summary
 }
 
-main "$@"
+main

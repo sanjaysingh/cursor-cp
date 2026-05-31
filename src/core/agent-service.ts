@@ -11,6 +11,7 @@ import {
   type SDKAgent,
 } from '@cursor/sdk';
 import type { AgentActivity } from '../models/types.js';
+import { logger } from '../util/logger.js';
 
 export interface AgentRunResult {
   success: boolean;
@@ -92,6 +93,40 @@ export class AgentService {
     return session;
   }
 
+  async resumeSession(
+    sessionId: string,
+    sdkAgentId: string,
+    workspacePath: string,
+    model?: string | null
+  ): Promise<AgentSession> {
+    const effectiveModel = model || this.defaultModel;
+    const cwd = workspacePath || process.cwd();
+
+    const agent = await Agent.resume(sdkAgentId, {
+      apiKey: this.apiKey,
+      model: { id: effectiveModel },
+      local: {
+        cwd,
+        settingSources: [],
+      },
+    });
+
+    const session: AgentSession = {
+      id: sessionId,
+      agent,
+      sdkAgentId: agent.agentId,
+      model: effectiveModel,
+      workspacePath: cwd,
+      activity: 'idle',
+      outputBuffer: '',
+      createdAt: new Date(),
+    };
+
+    this.sessions.set(sessionId, session);
+    logger.info({ sessionId, sdkAgentId: agent.agentId, cwd }, 'Agent session resumed');
+    return session;
+  }
+
   async sendPrompt(sessionId: string, prompt: string): Promise<AgentRunResult> {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -109,8 +144,9 @@ export class AgentService {
         followUpPrompt = undefined;
 
         const run = await session.agent.send(currentPrompt);
-        console.debug(
-          `Agent run started: session=${sessionId} agent=${session.sdkAgentId} run=${run.id}`
+        logger.info(
+          { sessionId, agentId: session.sdkAgentId, runId: run.id },
+          'Agent run started'
         );
 
         const pendingAnswer = await this.consumeRunStream(sessionId, session, run);
@@ -123,6 +159,7 @@ export class AgentService {
 
         if (result.status === 'error') {
           session.activity = 'error';
+          logger.error({ sessionId, runId: result.id }, 'Agent run failed');
           return {
             success: false,
             error: `Agent run failed: ${result.id}`,
@@ -140,6 +177,10 @@ export class AgentService {
         }
 
         session.activity = 'idle';
+        logger.info(
+          { sessionId, runId: result.id, textLength: this.finalText(session, result.result).length },
+          'Agent run completed'
+        );
         return {
           success: true,
           text: this.finalText(session, result.result),
@@ -150,6 +191,7 @@ export class AgentService {
       return { success: true, text: session.outputBuffer };
     } catch (err) {
       session.activity = 'error';
+      logger.error({ err, sessionId }, 'Agent sendPrompt failed');
 
       if (err instanceof CursorAgentError) {
         return {
@@ -196,46 +238,19 @@ export class AgentService {
           for (const block of event.message.content) {
             if (block.type === 'text' && block.text) {
               this.emitChunk(sessionId, session, { text: block.text, type: 'text' });
-            } else if (block.type === 'tool_use') {
-              this.emitChunk(sessionId, session, {
-                text: `🔧 Tool requested: ${block.name}\n`,
-                type: 'tool',
-              });
             }
           }
           break;
         }
 
-        case 'thinking': {
-          if (event.text) {
-            this.emitChunk(sessionId, session, { text: event.text, type: 'thinking' });
-          }
+        case 'thinking':
           break;
-        }
 
-        case 'tool_call': {
-          const statusSuffix =
-            event.status === 'completed'
-              ? ' completed'
-              : event.status === 'error'
-                ? ' failed'
-                : ' started';
-          this.emitChunk(sessionId, session, {
-            text: `🔧 ${event.name}${statusSuffix}\n`,
-            type: 'tool',
-          });
+        case 'tool_call':
           break;
-        }
 
-        case 'status': {
-          if (event.message) {
-            this.emitChunk(sessionId, session, {
-              text: `[${event.status}] ${event.message}\n`,
-              type: 'status',
-            });
-          }
+        case 'status':
           break;
-        }
 
         case 'task': {
           if (event.text) {
@@ -264,7 +279,7 @@ export class AgentService {
               pendingAnswer = answer;
               this.emitChunk(sessionId, session, { text: `> ${answer}\n`, type: 'text' });
             } catch (err) {
-              console.error('Failed to get answer for SDK request event:', err);
+              logger.error({ err, sessionId }, 'Failed to get answer for SDK request event');
             }
           }
           break;
@@ -275,7 +290,7 @@ export class AgentService {
           break;
 
         default: {
-          console.debug('Unhandled SDK event type:', event);
+          logger.debug({ event }, 'Unhandled SDK event type');
         }
       }
     }
@@ -292,7 +307,7 @@ export class AgentService {
     try {
       await session.agent[Symbol.asyncDispose]();
     } catch (err) {
-      console.error(`Error disposing agent for session ${sessionId}:`, err);
+      logger.error({ err, sessionId }, 'Error disposing agent for session');
     }
 
     this.sessions.delete(sessionId);
@@ -306,7 +321,7 @@ export class AgentService {
       try {
         await session.agent[Symbol.asyncDispose]();
       } catch (err) {
-        console.error(`Error disposing agent for session ${id}:`, err);
+        logger.error({ err, sessionId: id }, 'Error disposing agent for session');
       }
     }
 
@@ -327,7 +342,7 @@ export class AgentService {
       const models = await Cursor.models.list({ apiKey: this.apiKey });
       return models.map((m) => ({ id: m.id, name: m.displayName || m.id }));
     } catch (err) {
-      console.error('Failed to list models:', err);
+      logger.error({ err }, 'Failed to list models');
       return [
         { id: this.defaultModel, name: this.defaultModel },
         { id: 'auto', name: 'Auto' },

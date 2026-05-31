@@ -1,492 +1,388 @@
 # Cursor Control Plane
 
-A modern TypeScript-based control plane for managing Cursor agent sessions using the official `@cursor/sdk`.
+A TypeScript control plane for creating and managing [Cursor](https://cursor.com) agent sessions from a web dashboard or a Telegram bot, built on the official [`@cursor/sdk`](https://www.npmjs.com/package/@cursor/sdk).
 
 [![CI](https://github.com/sanjaysingh/cursor-cp/actions/workflows/ci.yml/badge.svg)](https://github.com/sanjaysingh/cursor-cp/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Architecture](#architecture)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
-- [Development](#development)
 - [Configuration](#configuration)
-- [API Documentation](#api-documentation)
-- [Testing](#testing)
+- [Architecture](#architecture)
+- [Development](#development)
+- [API Reference](#api-reference)
+- [Telegram Bot](#telegram-bot)
+- [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
 
 ## Overview
 
-Cursor Control Plane provides a web-based interface and API for managing persistent Cursor agent sessions. It bridges the gap between the Cursor IDE and automated agent workflows.
+Cursor Control Plane runs Cursor agent sessions for you and exposes them through a
+real-time web dashboard, a REST API, and an optional Telegram bot. Sessions and
+their message history are persisted to SQLite, so they survive restarts and can be
+resumed automatically.
 
-### Key Features
+### Features
 
-- **Web Dashboard**: Real-time chat interface with WebSocket streaming
-- **Persistent Sessions**: SQLite-backed session and message storage
-- **Multi-Repository Support**: Work across multiple code repositories
-- **GitHub Integration**: Clone and manage repositories directly
-- **Model Selection**: Choose from available Cursor models
-- **REST API**: Full programmatic access to all features
-
-## Architecture
-
-```mermaid
-flowchart TB
-    subgraph Client
-        Browser[Browser Dashboard]
-    end
-
-    subgraph Server
-        Fastify[Fastify Server]
-        API[REST API]
-        WS[WebSocket Handler]
-
-        subgraph Core
-            SM[SessionManager]
-            AS[AgentService]
-            EB[EventBus]
-            Channels[Channels]
-        end
-
-        subgraph Data
-            Repos[Repositories]
-            SQLite[(SQLite DB)]
-        end
-    end
-
-    subgraph External
-        Cursor[Cursor Agent]
-        GitHub[GitHub API]
-    end
-
-    Browser -->|HTTP/WebSocket| Fastify
-    Fastify --> API
-    Fastify --> WS
-    API --> SM
-    SM --> AS
-    SM --> Repos
-    AS -->|@cursor/sdk| Cursor
-    Repos --> SQLite
-    EB -.->|Events| WS
-    SM -->|Messages| Channels
-```
-
-### Module Structure
-
-```
-src/
-├── api/              # HTTP & WebSocket routes
-├── channels/         # Communication adapters (Web, Telegram)
-├── config/           # Configuration loading (YAML + env)
-├── core/             # Business logic (AgentService, SessionManager, EventBus)
-├── db/               # Database layer (SQLite + repositories)
-├── models/           # TypeScript types and Zod schemas
-├── mocks/            # SDK mock for development
-└── index.ts          # Application entry point
-```
-
-### Data Flow
-
-1. **Session Creation**: Client → API → SessionManager → AgentService (creates SDK agent)
-2. **Message Flow**: User → SessionManager → AgentService → Cursor SDK → Streaming response
-3. **Real-time Updates**: AgentService → EventBus → WebSocket → Client
+- **Web dashboard** — real-time chat UI with WebSocket streaming
+- **Telegram bot** — drive agents from chat, with inline buttons for sessions, models, and repos
+- **Persistent sessions** — SQLite-backed session, message, and participant storage
+- **Multi-repository support** — work across local workspaces and clone GitHub repos via the `gh` CLI
+- **Model selection** — choose any model the Cursor SDK exposes, per session or as a default
+- **REST API** — full programmatic access to every feature
 
 ## Quick Start
 
 ### Prerequisites
 
-- Node.js 20+ (22 recommended)
-- Cursor API Key ([Get one here](https://cursor.com/dashboard/cloud-agents))
-- GitHub CLI (`gh`) - optional but recommended for repo operations
+| Requirement | Minimum | Recommended | Notes |
+|-------------|---------|-------------|-------|
+| Node.js | 20.x | 22.x | |
+| npm | 9.x | latest | Ships with Node.js |
+| Cursor API key | — | — | [Get one here](https://cursor.com/dashboard/cloud-agents) |
+| Git | any | latest | Required to clone/update |
+| GitHub CLI (`gh`) | — | latest | Optional, enables repo browsing/cloning |
 
-### One-Line Install (macOS/Linux)
+### Install (macOS / Linux)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh | bash
 ```
 
-### Manual Install
+That's the supported install method. It performs a per-user install (no `sudo`,
+everything inside your home directory): it clones the project to
+`~/.local/share/cursor-cp`, installs dependencies, builds it, writes your
+configuration, and adds a `cursor-cp` launcher to `~/.local/bin`. You'll be prompted
+for your Cursor API key.
+
+Then start it:
 
 ```bash
-# Clone repository
-git clone https://github.com/sanjaysingh/cursor-cp.git
-cd cursor-cp
-
-# Install dependencies
-npm install
-
-# Setup environment
-cp .env.example .env
-# Edit .env and add your CURSOR_API_KEY
-
-# Start development server
-npm run dev
+cursor-cp        # serve at http://localhost:8080
 ```
 
-Then open http://localhost:8080
+> **Prefer to clone and run from source?** See [Development](#development).
 
 ## Installation
 
-### System Requirements
-
-| Requirement | Minimum | Recommended |
-|-------------|---------|-------------|
-| Node.js | 20.x | 22.x |
-| RAM | 512MB | 1GB+ |
-| Disk | 100MB | 1GB+ (for repos) |
-| OS | Linux, macOS | Latest stable |
-
-### Install Script Options
+### One-line installer
 
 ```bash
-# Default install (interactive)
-bash install.sh
-
-# Silent install (for CI/automation)
-export CURSOR_API_KEY="your-key-here"
-export INSTALL_DIR="/opt/cursor-cp"
-bash install.sh --silent
-
-# Install specific version
-bash install.sh --version v0.1.0
-
-# Upgrade existing installation
-bash install.sh --upgrade
+curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh | bash
 ```
 
-### Post-Installation
-
-After installation, the script will:
-
-1. Create `~/cursor-cp-ws-root/` for repositories
-2. Setup `~/.config/cursor-cp/` for config and data
-3. Create a systemd service (Linux) or launchd plist (macOS)
-4. Start the service
-
-### Service Management
+For a fully non-interactive install (no prompt), set the API key first:
 
 ```bash
-# Linux (systemd)
-sudo systemctl start cursor-cp
-sudo systemctl stop cursor-cp
-sudo systemctl status cursor-cp
-
-# macOS (launchd)
-launchctl start com.cursor.cp
-launchctl stop com.cursor.cp
-launchctl list | grep cursor-cp
+export CURSOR_API_KEY="cursor_..."
+curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh | bash
 ```
 
-## Development
-
-### Setup
+Pass options through the pipe with `bash -s --`:
 
 ```bash
-# Clone and install
-git clone https://github.com/sanjaysingh/cursor-cp.git
-cd cursor-cp
-npm install
-
-# Create local environment
-cp .env.example .env.local
-# Edit .env.local with your settings
-
-# Run database migrations (if any)
-npm run db:migrate
+# Install a specific tag/branch, or to a custom directory
+curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh \
+  | bash -s -- --version v0.1.0 --dir "$HOME/apps/cursor-cp"
 ```
 
-### Development Commands
+You can also download and run it directly (`bash install.sh [options]`).
+
+| Flag | Environment variable | Default | Description |
+|------|----------------------|---------|-------------|
+| `--version <ref>` | `CURSOR_CP_VERSION` | `latest` (main) | Git tag/branch to install |
+| `--dir <path>` | `CURSOR_CP_INSTALL_DIR` | `~/.local/share/cursor-cp` | Install location |
+| `--help` | — | — | Show usage |
+
+**Upgrading:** re-run the same one-liner. The installer detects the existing install,
+fetches and checks out the requested version, reinstalls dependencies, and rebuilds.
+Your `.env` is preserved.
+
+### After installing
 
 ```bash
-# Start with hot reload
-npm run dev
+# Start the server in the foreground
+cursor-cp
 
-# Type check
-npx tsc --noEmit
-
-# Run tests
-npm test
-npm run test:watch      # Watch mode
-
-# Lint code
-npm run lint
-
-# Build for production
-npm run build
-
-# Start production build
-npm start
+# Or run it as a per-user background service (systemd --user / launchd)
+cursor-cp service install
+cursor-cp service status
 ```
 
-### Project Structure
+If `~/.local/bin` is not on your `PATH`, the installer prints the line to add to your
+shell profile.
+
+### Runtime layout
+
+All runtime data lives under `~/cursor-cp/` (override with `CURSOR_CP_HOME`):
 
 ```
-cursor-cp/
-├── src/
-│   ├── api/           # Fastify routes and WebSocket
-│   ├── channels/      # Communication abstractions
-│   ├── config/        # Configuration loader
-│   ├── core/          # Core business logic
-│   ├── db/            # Database access layer
-│   ├── models/        # Domain models
-│   └── index.ts       # Entry point
-├── static/            # Web dashboard (Alpine.js)
-├── tests/             # E2E tests
-├── scripts/           # Utility scripts
-└── config.yaml        # Configuration file
+~/cursor-cp/
+├── ws-root/   cloned repositories / agent working directories
+├── logs/      daily JSON logs (cursor-cp-YYYY-MM-DD.log, kept 7 days)
+└── data/      SQLite database (cursor-cp.db) and service metadata
 ```
-
-### Adding Features
-
-1. **New API Endpoint**: Add to `src/api/routes.ts`
-2. **New Channel**: Implement `Channel` interface in `src/channels/`
-3. **Database Changes**: Modify schema in `src/db/connection.ts`, add migration
-4. **Events**: Use `EventBus` for real-time communication
 
 ## Configuration
 
-### Environment Variables
+Configuration is resolved with the following precedence (highest first):
+
+1. Environment variables (and `.env` in the project root)
+2. `config.yaml` in the project root
+3. Built-in defaults
+
+### Environment variables
 
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `CURSOR_API_KEY` | Cursor API key | **Yes** | - |
-| `WORKSPACE_ROOT` | Directory for repositories | No | `~/cursor-cp-ws-root` |
+| `CURSOR_API_KEY` | Cursor API key | **Yes** | — |
 | `PORT` | HTTP server port | No | `8080` |
 | `HOST` | HTTP server host | No | `0.0.0.0` |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token | No | - |
-| `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated user IDs | No | - |
-| `LOG_LEVEL` | Logging level | No | `info` |
+| `WORKSPACE_ROOT` | Directory for cloned repos / agent workspaces | No | `~/cursor-cp/ws-root` |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token (enables the bot when set and configured) | No | — |
+| `TELEGRAM_ALLOWED_USER_IDS` | Comma/space-separated Telegram user IDs allowed to use the bot | No | — |
+| `LOG_LEVEL` | Log level (`debug`, `info`, `warn`, `error`) | No | `info` |
+| `LOG_FILE` | Base path for daily log files; set to `false` to disable file logging | No | `~/cursor-cp/logs/cursor-cp.log` |
+| `CURSOR_CP_HOME` | Root directory for all runtime data | No | `~/cursor-cp` |
+| `CURSOR_CP_DB_PATH` | Override the SQLite database path | No | `~/cursor-cp/data/cursor-cp.db` |
+| `CONFIG_PATH` | Override the path to `config.yaml` | No | `<project>/config.yaml` |
 
-### Config File (`config.yaml`)
+Console logging is always enabled; daily file logging is on by default.
+
+### Config file (`config.yaml`)
 
 ```yaml
-# Repositories to show in dropdown
+# Repositories pinned to the top of the picker
 repos:
   - name: my-project
     path: /path/to/project
     description: My awesome project
 
-# Override default workspace location
-workspace_root: /custom/workspace
+# Override the default workspace location (env WORKSPACE_ROOT takes precedence)
+# workspace_root: /custom/workspace
 
-# Feature toggles
+# Channel toggles
 channels:
   telegram:
-    enabled: false
+    enabled: false   # also requires TELEGRAM_BOT_TOKEN
   web:
     enabled: true
 
-# Server settings
+# Server settings (env PORT/HOST take precedence)
 server:
   host: 0.0.0.0
   port: 8080
 
-# SDK settings
+# Cursor SDK settings
 sdk:
-  default_model: "composer-2"
-  max_sessions: 5
+  default_model: "composer-2.5"   # empty lets the SDK choose
+  max_sessions: 5                 # maximum concurrent sessions
 ```
 
-### Priority Order
+## Architecture
 
-Configuration values are resolved in this priority (highest first):
+```mermaid
+flowchart TB
+    subgraph Clients
+        Browser[Web Dashboard]
+        TG[Telegram]
+    end
 
-1. Environment variables
-2. `config.yaml` file
-3. Default values
+    subgraph Server[Fastify Server]
+        API[REST API]
+        WS[WebSocket]
+        subgraph Core
+            SM[SessionManager]
+            AS[AgentService]
+            EB[EventBus]
+            CH[Channels]
+        end
+        subgraph Data
+            Repos[Repositories]
+            SQLite[(SQLite)]
+        end
+    end
 
-## API Documentation
+    subgraph External
+        Cursor[Cursor Agent]
+        GitHub[GitHub CLI]
+    end
 
-### REST Endpoints
+    Browser -->|HTTP / WebSocket| API
+    TG -->|Bot API| CH
+    API --> SM
+    SM --> AS
+    SM --> Repos
+    AS -->|@cursor/sdk| Cursor
+    Repos --> SQLite
+    EB -.->|events| WS
+    SM --> CH
+```
 
-#### Health & Config
+### Data flow
+
+1. **Session creation** — Client → API → `SessionManager` → `AgentService` (creates an SDK agent).
+2. **Messages** — User → `SessionManager` → `AgentService` → Cursor SDK → streamed response.
+3. **Real-time updates** — `AgentService` → `EventBus` → WebSocket → web clients; non-web channels receive the full reply when the run completes.
+
+### Module structure
+
+```
+src/
+├── api/        # Fastify routes + WebSocket registration
+├── channels/   # Communication adapters (web, Telegram) + registry
+├── config/     # Environment and YAML configuration loading
+├── core/       # Business logic: AgentService, SessionManager, EventBus, repo picker
+├── db/         # SQLite connection and repositories
+├── format/     # Markdown → Telegram formatting
+├── models/     # TypeScript types and Zod schemas
+├── service/    # systemd/launchd service control
+├── util/       # Logger and daily log rotation
+├── cli/        # CLI entry point (serve, config, service)
+├── paths.ts    # Runtime path resolution
+└── index.ts    # Application entry point
+static/         # Web dashboard (Alpine.js + Tailwind via CDN)
+```
+
+## Development
+
+```bash
+git clone https://github.com/sanjaysingh/cursor-cp.git
+cd cursor-cp
+npm install
+cp .env.example .env   # then set CURSOR_API_KEY
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start the server with hot reload (`tsx watch`) |
+| `npm run build` | Compile TypeScript to `dist/` |
+| `npm start` | Run the compiled server (`node dist/index.js`) |
+| `npm test` | Run the test suite (Vitest) |
+| `npm run test:watch` | Run tests in watch mode |
+| `npm run lint` | Lint with ESLint |
+| `npx tsc --noEmit` | Type-check without emitting |
+
+The database schema is created and migrated automatically on first connection — there
+is no separate migration step.
+
+## API Reference
+
+All endpoints are served under the `/api` prefix.
+
+### Health & config
 
 ```http
 GET /api/health
-# Response: { "status": "ok", "version": "0.1.0" }
+# → { "status": "ok", "version": "0.1.0" }
 
 GET /api/dashboard-config
-# Response: { "web_channel_key": "web:default", "workspace_root": "...", "default_model": "..." }
+# → { "web_channel_key": "web:default", "workspace_root": "...", "default_model": "...", "max_sessions": 5 }
 ```
 
-#### Sessions
+### Sessions
 
 ```http
-# List sessions
-GET /api/sessions?include_closed=false
+GET  /api/sessions?include_closed=false      # List sessions
+POST /api/sessions                           # Create a session
+GET  /api/sessions/:id                        # Get a session
+GET  /api/sessions/:id/messages               # Get message history
+POST /api/sessions/:id/message                # Send a message
+POST /api/sessions/:id/join                   # Join an existing session
+POST /api/sessions/:id/answer                 # Answer a pending agent question
+POST /api/sessions/:id/close                  # Close and delete a session
+POST /api/sessions/close-all                  # Close and delete all sessions
+```
 
-# Create session
+Create a session:
+
+```http
 POST /api/sessions
 Content-Type: application/json
+
 {
-  "repoPath": "/path/to/repo",
-  "title": "My Session",
-  "model": "composer-2"
+  "repoPath": "/path/to/repo",   // optional; defaults to the workspace root
+  "title": "My Session",          // optional
+  "model": "composer-2.5"         // optional; null/omitted uses the default
 }
-
-# Get session details
-GET /api/sessions/:sessionId
-
-# Send message
-POST /api/sessions/:sessionId/message
-Content-Type: application/json
-{ "text": "Hello, agent!" }
-
-# Close session
-POST /api/sessions/:sessionId/close
-
-# Get messages
-GET /api/sessions/:sessionId/messages
 ```
 
-#### Repositories
+### Repositories & models
 
 ```http
-GET /api/workspaces           # List local workspaces
-GET /api/github/repos         # List GitHub repos (requires gh CLI)
-POST /api/github/clone        # Clone a repo
-GET /api/repo-picker           # Combined local + GitHub list
-```
-
-#### Models
-
-```http
-GET /api/models              # List available models
-PUT /api/settings/default-model
-Content-Type: application/json
-{ "model": "composer-2" }
+GET  /api/workspaces                  # Local workspace folders
+GET  /api/github/repos?limit=40       # GitHub repos (requires gh CLI)
+POST /api/github/clone                # Clone a repo into the workspace
+GET  /api/repo-picker?gh_limit=80     # Combined, de-duplicated local + GitHub list
+GET  /api/models                      # Available models
+PUT  /api/settings/default-model      # Set the default model
 ```
 
 ### WebSocket
 
-Connect to `/api/ws` for real-time updates.
+Connect to `/api/ws` for real-time updates. Send `{ "type": "ping" }` to receive a
+`{ "type": "pong" }` keep-alive. Server events include `hello`, `session_updated`,
+`session_removed`, `sessions_purged`, `agent_stream`, `channel_message`, and `question`.
 
-**Outgoing Messages:**
-```json
-{ "type": "ping" }
-```
+## Telegram Bot
 
-**Incoming Events:**
-```json
-// Agent streaming
-{ "type": "agent_stream", "session_id": "...", "text": "..." }
+Set `TELEGRAM_BOT_TOKEN`, list the allowed user IDs in `TELEGRAM_ALLOWED_USER_IDS`,
+and enable the channel in `config.yaml` (`channels.telegram.enabled: true`). The bot
+exposes the following commands:
 
-// Session updated
-{ "type": "session_updated", "session": { ... } }
+| Command | Description |
+|---------|-------------|
+| `/start` | Show help |
+| `/sessions` | List sessions and connect |
+| `/models` | List models and set the default |
+| `/current` | Show the current session |
+| `/close` | Close the current session |
+| `/closeall` | Close all sessions |
+| `/repos` | Browse and clone GitHub repos (`gh`) |
+| `/workspaces` | Browse local workspace folders |
 
-// Question from agent
-{ "type": "question", "session_id": "...", "question": "...", "options": [...] }
-
-// Keep alive
-{ "type": "pong" }
-```
-
-## Testing
-
-### Unit Tests
-
-```bash
-# Run all tests
-npm test
-
-# Watch mode during development
-npm run test:watch
-
-# With coverage
-npx vitest run --coverage
-```
-
-### E2E Tests
-
-```bash
-# Build first
-npm run build
-
-# Start server and run e2e tests
-npm run test:e2e
-```
-
-### Test Structure
-
-- `src/**/*.test.ts` - Unit tests alongside source files
-- `tests/` - Integration and E2E tests
-
-### Writing Tests
-
-```typescript
-import { describe, it, expect } from 'vitest';
-import { SessionManager } from './session-manager.js';
-
-describe('SessionManager', () => {
-  it('should create a session', async () => {
-    const manager = createTestManager();
-    const session = await manager.createSession('web', 'key', '/repo', 'Test');
-    expect(session.status).toBe('open');
-  });
-});
-```
-
-## Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-### Development Workflow
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make changes with tests
-4. Run the full test suite (`npm test`)
-5. Commit (`git commit -m 'Add amazing feature'`)
-6. Push (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
-
-### Code Style
-
-- TypeScript strict mode enabled
-- ESLint for code quality
-- Prettier for formatting (optional)
-- Conventional commits preferred
-
-### CI Requirements
-
-All PRs must pass:
-- ✅ Type check (`tsc --noEmit`)
-- ✅ Lint (`eslint`)
-- ✅ Unit tests (`vitest`)
-- ✅ Build (`tsc`)
-- ✅ E2E smoke test
+Any other text is sent to the active session. Only users listed in
+`TELEGRAM_ALLOWED_USER_IDS` are allowed to interact with the bot.
 
 ## Troubleshooting
 
-### Common Issues
+**`CURSOR_API_KEY is required`** — Set the key in your environment or `.env`:
 
-**"CURSOR_API_KEY is required"**
 ```bash
-export CURSOR_API_KEY="your-key-here"
-# Or add to .env file
+export CURSOR_API_KEY="cursor_..."
 ```
 
-**"Cannot find module '@cursor/sdk'"**
-Run `npm install` to install dependencies including `@cursor/sdk`.
+**Port already in use** — Start on a different port:
 
-**Port already in use**
 ```bash
 PORT=8081 npm run dev
 ```
 
-### Debug Mode
+**GitHub features unavailable** — Install and authenticate the GitHub CLI:
+
+```bash
+gh auth login
+```
+
+**Verbose logging** — Run with debug logs:
 
 ```bash
 LOG_LEVEL=debug npm run dev
 ```
 
+## Contributing
+
+Contributions are welcome! Please read the [Contributing Guide](CONTRIBUTING.md) before
+opening a pull request. All pull requests must pass lint, type check, tests, and build
+in CI.
+
 ## License
 
 [MIT](LICENSE) © Sanjay Singh
-
----
-
-Made with TypeScript and the Cursor SDK

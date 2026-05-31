@@ -4,9 +4,10 @@
 
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import { homedir } from 'os';
 import yaml from 'js-yaml';
 import { z } from 'zod';
+import { getProjectRoot } from './env.js';
+import { defaultWorkspaceRoot, expandHome } from '../paths.js';
 import type { AppConfig } from '../models/types.js';
 
 const RepoEntrySchema = z.object({
@@ -72,19 +73,19 @@ function resolveWorkspaceRoot(config: RawConfig, env: EnvSettings): string {
   // Priority: env > config > default
   const fromEnv = env.workspaceRoot.trim();
   if (fromEnv) {
-    return resolve(fromEnv.replace(/^~/, homedir()));
+    return expandHome(fromEnv);
   }
 
   const fromConfig = config.workspace_root?.trim();
   if (fromConfig) {
-    return resolve(fromConfig.replace(/^~/, homedir()));
+    return expandHome(fromConfig);
   }
 
-  return resolve(homedir(), 'cursor-cp-ws-root');
+  return defaultWorkspaceRoot();
 }
 
 export function loadConfig(): { config: AppConfig; env: EnvSettings } {
-  const configPath = process.env.CONFIG_PATH ?? 'config.yaml';
+  const configPath = process.env.CONFIG_PATH ?? resolve(getProjectRoot(), 'config.yaml');
   let raw: RawConfig = AppConfigSchema.parse({});
 
   if (existsSync(configPath)) {

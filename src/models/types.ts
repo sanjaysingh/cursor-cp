@@ -15,6 +15,8 @@ export interface Session {
   status: SessionStatus;
   activity: AgentActivity;
   model: string | null;
+  /** Cursor SDK agent id (`agent-…` local, `bc-…` cloud) for Agent.resume after restart */
+  sdkAgentId: string | null;
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;

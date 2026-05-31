@@ -55,6 +55,7 @@ describe('AgentService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sdkMock.Agent.create.mockResolvedValue(mockAgent);
+    sdkMock.Agent.resume.mockResolvedValue(mockAgent);
     service = new AgentService({
       apiKey: 'test-key',
       defaultModel: 'composer-2',
@@ -81,6 +82,27 @@ describe('AgentService', () => {
     expect(session.workspacePath).toBe('/tmp/workspace');
     expect(session.model).toBe('composer-2');
     expect(session.sdkAgentId).toBe('agent-test-id');
+  });
+
+  it('should resume session via Agent.resume', async () => {
+    const session = await service.resumeSession(
+      'test-id',
+      'agent-existing-id',
+      '/tmp/workspace',
+      'composer-2'
+    );
+
+    expect(sdkMock.Agent.resume).toHaveBeenCalledWith('agent-existing-id', {
+      apiKey: 'test-key',
+      model: { id: 'composer-2' },
+      local: {
+        cwd: '/tmp/workspace',
+        settingSources: [],
+      },
+    });
+    expect(session.id).toBe('test-id');
+    expect(session.sdkAgentId).toBe('agent-test-id');
+    expect(service.getSession('test-id')).toBeDefined();
   });
 
   it('should list sessions', () => {

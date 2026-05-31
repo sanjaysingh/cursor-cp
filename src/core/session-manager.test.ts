@@ -21,6 +21,7 @@ const { mockAgent, sdkMock } = vi.hoisted(() => {
     sdkMock: {
       Agent: {
         create: vi.fn().mockResolvedValue(mockAgent),
+        resume: vi.fn().mockResolvedValue(mockAgent),
       },
       Cursor: {
         models: {
@@ -48,6 +49,15 @@ import {
   ParticipantRepository,
   SettingsRepository,
 } from '../db/repositories.js';
+import type { ChannelRegistry } from '../channels/base.js';
+
+const mockRegistry: ChannelRegistry = {
+  register: () => {},
+  get: () => undefined,
+  list: () => [],
+  startAll: async () => {},
+  stopAll: async () => {},
+};
 
 describe('SessionManager', () => {
   let db: Database.Database;
@@ -73,6 +83,7 @@ describe('SessionManager', () => {
         title TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'open',
         model TEXT,
+        sdk_agent_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         closed_at TEXT
@@ -115,6 +126,7 @@ describe('SessionManager', () => {
       },
       agentService,
       eventBus,
+      registry: mockRegistry,
       maxSessions: 2,
       defaultModel: 'composer-2',
     });
@@ -167,6 +179,82 @@ describe('SessionManager', () => {
       );
 
       expect(session.model).toBe('claude-sonnet-4');
+    });
+
+    it('should persist sdk agent id', async () => {
+      const session = await sessionManager.createSession('web', 'web:1', '/tmp/r1', 'S1');
+
+      const fromDb = sessionManager.getSession(session.id);
+      expect(fromDb?.sdkAgentId).toBe('agent-test-id');
+    });
+  });
+
+  describe('rehydration after restart', () => {
+    it('should resume SDK agent from persisted id', async () => {
+      const session = await sessionManager.createSession('web', 'web:1', '/tmp/r1', 'S1');
+      expect(session.sdkAgentId).toBe('agent-test-id');
+
+      // Simulate process restart: new in-memory agent service, same DB
+      await agentService.closeAllSessions();
+      const restartedAgentService = new AgentService({
+        apiKey: 'test-key',
+        defaultModel: 'composer-2',
+      });
+      sdkMock.Agent.resume.mockResolvedValue(mockAgent);
+
+      const restartedManager = new SessionManager({
+        repositories: {
+          sessions: new SessionRepository(db),
+          messages: new MessageRepository(db),
+          participants: new ParticipantRepository(db),
+          settings: new SettingsRepository(db),
+        },
+        agentService: restartedAgentService,
+        eventBus,
+        registry: mockRegistry,
+        maxSessions: 2,
+        defaultModel: 'composer-2',
+      });
+
+      sdkMock.Agent.create.mockClear();
+      sdkMock.Agent.resume.mockClear();
+
+      mockAgent.send.mockResolvedValue({
+        id: 'run-2',
+        agentId: 'agent-test-id',
+        async *stream() {
+          yield {
+            type: 'assistant',
+            agent_id: 'agent-test-id',
+            run_id: 'run-2',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Resumed reply' }],
+            },
+          };
+        },
+        wait: vi.fn().mockResolvedValue({
+          id: 'run-2',
+          status: 'finished',
+          result: 'Resumed reply',
+        }),
+      });
+
+      const joined = await restartedManager.joinSession(session.id, 'web', 'web:1');
+      expect(joined).toBeDefined();
+      expect(sdkMock.Agent.resume).toHaveBeenCalledWith(
+        'agent-test-id',
+        expect.objectContaining({
+          apiKey: 'test-key',
+          model: { id: 'composer-2' },
+          local: expect.objectContaining({ cwd: '/tmp/r1' }),
+        })
+      );
+      expect(sdkMock.Agent.create).not.toHaveBeenCalled();
+
+      const result = await restartedManager.sendSessionMessage(session.id, 'Continue', 'web', 'web:1');
+      expect(result.activity).not.toBe('error');
+      expect(mockAgent.send).toHaveBeenCalledWith('Continue');
     });
   });
 

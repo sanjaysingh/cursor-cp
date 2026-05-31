@@ -6,9 +6,9 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
+import { dataDir, logsDir, projectHomeDir, serviceMarkerPath } from '../paths.js';
 
-const DATA_DIR = resolve(homedir(), '.config', 'cursor-cp');
-const SERVICE_MARKER = resolve(DATA_DIR, 'service.json');
+const SERVICE_MARKER = serviceMarkerPath();
 
 interface ServiceMarker {
   type: 'systemd-user' | 'launchd';
@@ -36,7 +36,8 @@ export class ServiceController {
   }
 
   private saveMarker(marker: ServiceMarker): void {
-    mkdirSync(DATA_DIR, { recursive: true });
+    mkdirSync(dataDir(), { recursive: true });
+    mkdirSync(logsDir(), { recursive: true });
     writeFileSync(SERVICE_MARKER, JSON.stringify(marker, null, 2));
     this.marker = marker;
   }
@@ -103,11 +104,11 @@ export class ServiceController {
         <string>production</string>
     </dict>
     <key>WorkingDirectory</key>
-    <string>${DATA_DIR}</string>
+    <string>${projectHomeDir()}</string>
     <key>StandardOutPath</key>
-    <string>${DATA_DIR}/service.log</string>
+    <string>${logsDir()}/service.log</string>
     <key>StandardErrorPath</key>
-    <string>${DATA_DIR}/service.error.log</string>
+    <string>${logsDir()}/service.error.log</string>
     <key>KeepAlive</key>
     <true/>
     <key>RunAtLoad</key>
@@ -133,7 +134,7 @@ export class ServiceController {
 
     console.log('✅ Installed as macOS LaunchAgent');
     console.log(`   Plist: ${plistPath}`);
-    console.log(`   Logs: ${DATA_DIR}/service.log`);
+    console.log(`   Logs: ${logsDir()}/service.log`);
   }
 
   private async installSystemd(): Promise<void> {
@@ -151,7 +152,7 @@ ExecStart=${binPath} serve
 Restart=on-failure
 RestartSec=10
 Environment=NODE_ENV=production
-WorkingDirectory=${DATA_DIR}
+WorkingDirectory=${projectHomeDir()}
 StandardOutput=journal
 StandardError=journal
 

@@ -90,4 +90,26 @@ describe('EventBus', () => {
 
     expect(handler).not.toHaveBeenCalled();
   });
+
+  it('should invoke wildcard handlers for all events', async () => {
+    const bus = new EventBus();
+    const wildcard = vi.fn();
+    const specific = vi.fn();
+
+    bus.on('*', wildcard);
+    bus.on('agent_stream', specific);
+
+    await bus.emit({ type: 'agent_stream', session_id: 's1', text: 'hi' });
+
+    expect(wildcard).toHaveBeenCalledWith({
+      type: 'agent_stream',
+      session_id: 's1',
+      text: 'hi',
+    });
+    expect(specific).toHaveBeenCalledWith({
+      type: 'agent_stream',
+      session_id: 's1',
+      text: 'hi',
+    });
+  });
 });

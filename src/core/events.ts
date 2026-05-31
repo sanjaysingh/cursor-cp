@@ -3,6 +3,7 @@
  */
 
 import type { AppEvent } from '../models/types.js';
+import { logger } from '../util/logger.js';
 
 export type EventHandler = (event: AppEvent) => void | Promise<void>;
 
@@ -23,7 +24,15 @@ export class EventBus {
   }
 
   async emit(event: AppEvent): Promise<void> {
-    const handlers = this.handlers.get(event.type);
+    await this.invokeHandlers(event.type, event);
+
+    if ((event.type as string) !== '*') {
+      await this.invokeHandlers('*', event);
+    }
+  }
+
+  private async invokeHandlers(eventType: string, event: AppEvent): Promise<void> {
+    const handlers = this.handlers.get(eventType);
     if (!handlers) return;
 
     const promises: Promise<void>[] = [];
@@ -34,7 +43,7 @@ export class EventBus {
           promises.push(result);
         }
       } catch (err) {
-        console.error(`Event handler failed for ${event.type}:`, err);
+        logger.error({ err, eventType }, 'Event handler failed');
       }
     }
 

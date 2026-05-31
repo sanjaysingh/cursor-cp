@@ -3,15 +3,14 @@
  * TypeScript + Cursor SDK Edition
  */
 
-import 'dotenv/config';
 import fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import staticFiles from '@fastify/static';
 import { resolve, dirname } from 'path';
-import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 
+import { requireCursorApiKey } from './config/env.js';
 import { loadConfig } from './config/loader.js';
 import { getDatabase } from './db/connection.js';
 import {
@@ -26,27 +25,24 @@ import { EventBus } from './core/events.js';
 import { WebChannel } from './channels/web-channel.js';
 import { TelegramChannel } from './channels/telegram-channel.js';
 import { ChannelRegistryImpl } from './channels/registry.js';
-import { registerRoutes } from './api/routes.js';
-import { registerWebSocket } from './api/websocket.js';
-import { ensureSetup } from './cli/setup-wizard.js';
+import { registerApi } from './api/register-api.js';
+import { logger, getLogFilePath, createFastifyLoggerConfig } from './util/logger.js';
+import { ensureProjectDirs, projectHomeDir } from './paths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const DATA_DIR = resolve(homedir(), '.config', 'cursor-cp');
-
 async function main() {
-  // Ensure setup wizard has been run
-  await ensureSetup(DATA_DIR);
+  requireCursorApiKey();
 
-  // Load configuration
   const { config, env } = loadConfig();
 
-  // Validate required config
-  if (!env.cursorApiKey) {
-    console.error('Error: CURSOR_API_KEY is required');
-    console.error('Run: npm run setup');
-    console.error('Or set CURSOR_API_KEY environment variable');
-    process.exit(1);
+  ensureProjectDirs();
+
+  const logFile = getLogFilePath();
+  if (logFile) {
+    logger.info({ logFile, projectHome: projectHomeDir() }, 'File logging enabled');
+  } else {
+    logger.info('File logging disabled');
   }
 
   // Initialize database
@@ -91,20 +87,24 @@ async function main() {
 
   // Telegram channel (if enabled and configured)
   if (config.channels.telegram.enabled && env.telegramBotToken) {
+    logger.info(
+      { allowedUsers: env.telegramAllowedUserIds.size },
+      'Registering Telegram channel'
+    );
     const telegramChannel = new TelegramChannel(
       env.telegramBotToken,
       sessionManager,
       env.telegramAllowedUserIds,
-      eventBus
+      config
     );
     channelRegistry.register(telegramChannel);
+  } else if (config.channels.telegram.enabled) {
+    logger.warn('Telegram enabled in config but TELEGRAM_BOT_TOKEN is not set');
   }
 
   // Create Fastify app
   const app = fastify({
-    logger: {
-      level: process.env.LOG_LEVEL ?? 'info',
-    },
+    logger: createFastifyLoggerConfig(),
   });
 
   // Register plugins
@@ -115,29 +115,24 @@ async function main() {
 
   await app.register(websocket);
 
-  // Static files (dashboard UI)
-  await app.register(staticFiles, {
-    root: resolve(__dirname, '../static'),
-    prefix: '/',
-  });
-
-  // Register WebSocket
-  registerWebSocket(app, eventBus);
-
-  // Register API routes
-  await registerRoutes(app, {
+  // API routes and WebSocket (must be registered before static files)
+  await registerApi(app, {
+    eventBus,
     sessionManager,
     agentService,
     webChannel,
     config,
   });
 
-  // Start channels
-  await channelRegistry.startAll();
+  // Static files (dashboard UI)
+  await app.register(staticFiles, {
+    root: resolve(__dirname, '../static'),
+    prefix: '/',
+  });
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {
-    console.log(`\n${signal} received. Shutting down...`);
+    logger.info({ signal }, 'Shutdown requested');
 
     // Close all sessions
     await sessionManager.closeAllSessions();
@@ -155,12 +150,24 @@ async function main() {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  // Start server
+  // Start HTTP server before channels so the web UI works even if Telegram is slow
   try {
     await app.listen({
       host: config.server.host,
       port: config.server.port,
     });
+
+    logger.info(
+      {
+        host: config.server.host,
+        port: config.server.port,
+        workspace: config.workspaceRoot,
+        maxSessions: config.sdk.maxSessions,
+        web: config.channels.web.enabled,
+        telegram: config.channels.telegram.enabled && Boolean(env.telegramBotToken),
+      },
+      'HTTP server listening'
+    );
 
     console.log(`
 ╔══════════════════════════════════════════════════════════╗
@@ -172,9 +179,15 @@ async function main() {
 ╚══════════════════════════════════════════════════════════╝
     `);
   } catch (err) {
-    console.error('Failed to start server:', err);
+    logger.error({ err }, 'Failed to start HTTP server');
     process.exit(1);
   }
+
+  // Start channels after HTTP is up (Telegram polling must not block the web server)
+  await channelRegistry.startAll();
 }
 
-main();
+main().catch((err) => {
+  logger.error({ err }, 'Fatal error during startup');
+  process.exit(1);
+});

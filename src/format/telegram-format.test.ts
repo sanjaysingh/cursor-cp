@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { markdownToTelegram, splitForTelegram } from './telegram-format.js';
+import { markdownToTelegram, splitForTelegram, markdownToTelegramHtml } from './telegram-format.js';
 
 describe('markdownToTelegram', () => {
   it('should handle empty text', () => {
@@ -89,6 +89,42 @@ describe('markdownToTelegram', () => {
     expect(result.entities[2].type).toBe('code');
   });
 
+  it('should preserve paragraph breaks', () => {
+    const input = 'First paragraph.\n\nSecond paragraph.';
+    const result = markdownToTelegram(input);
+    expect(result.text).toBe(input);
+    expect(result.entities).toEqual([]);
+  });
+
+  it('should preserve newlines with formatting entities', () => {
+    const input = '**Bold** intro.\n\nMore text here.';
+    const result = markdownToTelegram(input);
+    expect(result.text).toBe('Bold intro.\n\nMore text here.');
+    expect(result.entities).toHaveLength(1);
+    expect(result.entities[0].type).toBe('bold');
+  });
+
+  it('should preserve heading paragraph separation', () => {
+    const input = '# Title\n\nBody text.';
+    const result = markdownToTelegram(input);
+    expect(result.text).toBe('Title\n\nBody text.');
+    expect(result.entities[0]?.type).toBe('bold');
+  });
+
+  it('should not create overlapping bold for heading with strong', () => {
+    const result = markdownToTelegram('## **Section**');
+    expect(result.text).toBe('Section');
+    expect(result.entities).toHaveLength(1);
+    expect(result.entities[0]).toMatchObject({ type: 'bold', offset: 0, length: 7 });
+  });
+
+  it('should bold only strong text in mixed heading', () => {
+    const result = markdownToTelegram('# **Title** here');
+    expect(result.text).toBe('Title here');
+    expect(result.entities).toHaveLength(1);
+    expect(result.entities[0]).toMatchObject({ type: 'bold', offset: 0, length: 5 });
+  });
+
   it('should handle text over 4096 chars', () => {
     const longText = 'a'.repeat(5000);
     const result = markdownToTelegram(longText);
@@ -112,5 +148,23 @@ describe('splitForTelegram', () => {
     for (const chunk of result) {
       expect(chunk.text.length).toBeLessThanOrEqual(500);
     }
+  });
+});
+
+describe('markdownToTelegramHtml', () => {
+  it('should render bold as HTML', () => {
+    const html = markdownToTelegramHtml('This is **bold** text');
+    expect(html).toContain('<b>bold</b>');
+  });
+
+  it('should render headings as bold', () => {
+    const html = markdownToTelegramHtml('## Section\n\nBody');
+    expect(html).toContain('<b>Section</b>');
+  });
+
+  it('should render list items with bullets', () => {
+    const html = markdownToTelegramHtml('- **Item 1**: detail');
+    expect(html).toContain('<b>Item 1</b>');
+    expect(html).toContain('•');
   });
 });

@@ -41,60 +41,7 @@ export class RepoPicker {
     const seenNames = new Set<string>();
     const localByName = new Map<string, string>();
 
-    // 1. Add configured repos first
-    for (const repo of this.options.repos) {
-      if (!existsSync(repo.path)) continue;
-
-      const resolvedPath = resolve(repo.path);
-      if (seenPaths.has(resolvedPath)) continue;
-
-      seenPaths.add(resolvedPath);
-      seenNames.add(repo.name);
-      localByName.set(repo.name, resolvedPath);
-
-      items.push({
-        id: `local-${repo.name}`,
-        type: 'local',
-        label: `local-${repo.name}`,
-        path: resolvedPath,
-        nameWithOwner: null,
-        description: repo.description || '',
-        isCloned: true,
-      });
-    }
-
-    // 2. Scan workspace directories
-    const workspaceEntries = await this.scanWorkspace();
-    let localIndex = 0;
-
-    for (const entry of workspaceEntries) {
-      if (seenPaths.has(entry.path)) continue;
-      if (seenNames.has(entry.name)) {
-        // Rename to avoid collision: name -> name-1, name-2, etc.
-        let counter = 1;
-        let newName = `${entry.name}-${counter}`;
-        while (seenNames.has(newName)) {
-          counter++;
-          newName = `${entry.name}-${counter}`;
-        }
-        entry.name = newName;
-      }
-
-      seenPaths.add(entry.path);
-      seenNames.add(entry.name);
-      localByName.set(entry.name, entry.path);
-
-      items.push({
-        id: `local-ws-${localIndex}`,
-        type: 'local',
-        label: `local-${entry.name}`,
-        path: entry.path,
-        nameWithOwner: null,
-        description: '',
-        isCloned: true,
-      });
-      localIndex++;
-    }
+    await this.addLocalItems(items, seenPaths, seenNames, localByName);
 
     // 3. Fetch GitHub repos
     const ghRepos = await this.fetchGitHubRepos();
@@ -141,6 +88,78 @@ export class RepoPicker {
     }
 
     return { items, error };
+  }
+
+  /** Local configured repos + workspace folders (same sources as the web repo picker). */
+  async buildLocalItems(): Promise<RepoItem[]> {
+    const items: RepoItem[] = [];
+    const seenPaths = new Set<string>();
+    const seenNames = new Set<string>();
+    const localByName = new Map<string, string>();
+
+    await this.addLocalItems(items, seenPaths, seenNames, localByName);
+    return items;
+  }
+
+  private async addLocalItems(
+    items: RepoItem[],
+    seenPaths: Set<string>,
+    seenNames: Set<string>,
+    localByName: Map<string, string>
+  ): Promise<void> {
+    // 1. Add configured repos first
+    for (const repo of this.options.repos) {
+      if (!existsSync(repo.path)) continue;
+
+      const resolvedPath = resolve(repo.path);
+      if (seenPaths.has(resolvedPath)) continue;
+
+      seenPaths.add(resolvedPath);
+      seenNames.add(repo.name);
+      localByName.set(repo.name, resolvedPath);
+
+      items.push({
+        id: `local-${repo.name}`,
+        type: 'local',
+        label: `local-${repo.name}`,
+        path: resolvedPath,
+        nameWithOwner: null,
+        description: repo.description || '',
+        isCloned: true,
+      });
+    }
+
+    // 2. Scan workspace directories
+    const workspaceEntries = await this.scanWorkspace();
+    let localIndex = 0;
+
+    for (const entry of workspaceEntries) {
+      if (seenPaths.has(entry.path)) continue;
+      if (seenNames.has(entry.name)) {
+        let counter = 1;
+        let newName = `${entry.name}-${counter}`;
+        while (seenNames.has(newName)) {
+          counter++;
+          newName = `${entry.name}-${counter}`;
+        }
+        entry.name = newName;
+      }
+
+      seenPaths.add(entry.path);
+      seenNames.add(entry.name);
+      localByName.set(entry.name, entry.path);
+
+      items.push({
+        id: `local-ws-${localIndex}`,
+        type: 'local',
+        label: `local-${entry.name}`,
+        path: entry.path,
+        nameWithOwner: null,
+        description: '',
+        isCloned: true,
+      });
+      localIndex++;
+    }
   }
 
   private async scanWorkspace(): Promise<Array<{ name: string; path: string }>> {
@@ -218,4 +237,14 @@ export async function buildRepoPicker(
   });
 
   return picker.buildItems();
+}
+
+/** List local workspace folders — shared by web repo picker and Telegram /workspaces. */
+export async function listLocalWorkspaceItems(config: AppConfig): Promise<RepoItem[]> {
+  const picker = new RepoPicker({
+    workspaceRoot: config.workspaceRoot,
+    repos: config.repos,
+  });
+
+  return picker.buildLocalItems();
 }

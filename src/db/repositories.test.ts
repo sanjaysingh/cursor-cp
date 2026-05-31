@@ -37,6 +37,7 @@ describe('Repositories', () => {
         title TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'open',
         model TEXT,
+        sdk_agent_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         closed_at TEXT
@@ -87,6 +88,7 @@ describe('Repositories', () => {
         title: 'Test Session',
         status: 'open',
         model: 'composer-2',
+        sdkAgentId: null,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         closedAt: null,
@@ -112,6 +114,7 @@ describe('Repositories', () => {
         title: 'Session 1',
         status: 'open',
         model: null,
+        sdkAgentId: null,
         createdAt: now,
         updatedAt: now,
         closedAt: null,
@@ -125,6 +128,7 @@ describe('Repositories', () => {
         title: 'Session 2',
         status: 'open',
         model: null,
+        sdkAgentId: null,
         createdAt: now,
         updatedAt: now,
         closedAt: null,
@@ -146,6 +150,7 @@ describe('Repositories', () => {
         title: 'Session',
         status: 'open',
         model: null,
+        sdkAgentId: null,
         createdAt: now,
         updatedAt: now,
         closedAt: null,
@@ -156,6 +161,29 @@ describe('Repositories', () => {
       const found = sessions.findById('s1');
       expect(found?.status).toBe('closed');
       expect(found?.closedAt).toBeDefined();
+    });
+
+    it('should update sdk agent id', () => {
+      const now = new Date().toISOString();
+
+      sessions.insert({
+        id: 's1',
+        channel: 'web',
+        channelKey: 'key1',
+        repoPath: '/r1',
+        title: 'Session',
+        status: 'open',
+        model: null,
+        sdkAgentId: null,
+        createdAt: now,
+        updatedAt: now,
+        closedAt: null,
+      });
+
+      sessions.updateSdkAgentId('s1', 'agent-resumed-id');
+
+      const found = sessions.findById('s1');
+      expect(found?.sdkAgentId).toBe('agent-resumed-id');
     });
 
     it('should count sessions', () => {
@@ -170,6 +198,7 @@ describe('Repositories', () => {
         title: 'Session',
         status: 'open',
         model: null,
+        sdkAgentId: null,
         createdAt: now,
         updatedAt: now,
         closedAt: null,

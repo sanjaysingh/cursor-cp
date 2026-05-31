@@ -5,11 +5,12 @@
 import { Telegraf, Markup, Context } from 'telegraf';
 import type { Update } from 'telegraf/types';
 import type { Channel } from './base.js';
-import type { MessageTarget } from '../models/types.js';
-import { EventBus } from '../core/events.js';
+import type { MessageTarget, AppConfig } from '../models/types.js';
 import type { SessionManager } from '../core/session-manager.js';
-import { splitForTelegram } from '../format/telegram-format.js';
+import { listLocalWorkspaceItems } from '../core/repo-picker.js';
+import { splitPlainText, markdownToTelegram, markdownToTelegramHtml } from '../format/telegram-format.js';
 import { createHash } from 'crypto';
+import { logger } from '../util/logger.js';
 
 interface PendingQuestion {
   resolve: (answer: string) => void;
@@ -23,7 +24,7 @@ export class TelegramChannel implements Channel {
   private bot: Telegraf<Context<Update>>;
   private sessionManager: SessionManager;
   private allowedUserIds: Set<number>;
-  private eventBus: EventBus;
+  private config: AppConfig;
 
   // Pending questions by callback token
   private pendingQuestions: Map<string, PendingQuestion> = new Map();
@@ -41,12 +42,12 @@ export class TelegramChannel implements Channel {
     token: string,
     sessionManager: SessionManager,
     allowedUserIds: Set<number>,
-    eventBus: EventBus
+    config: AppConfig
   ) {
     this.bot = new Telegraf(token);
     this.sessionManager = sessionManager;
     this.allowedUserIds = allowedUserIds;
-    this.eventBus = eventBus;
+    this.config = config;
 
     this.setupHandlers();
     this.setupMiddleware();
@@ -57,16 +58,71 @@ export class TelegramChannel implements Channel {
     this.bot.use(async (ctx, next) => {
       const userId = ctx.from?.id;
       if (!userId || !this.allowedUserIds.has(userId)) {
-        console.warn(`Telegram access denied for user ${userId}`);
+        logger.warn(
+          { userId, username: ctx.from?.username, updateType: ctx.updateType },
+          'Telegram access denied'
+        );
         return;
       }
       return next();
     });
   }
 
+  private botCommands(): Array<{ command: string; description: string }> {
+    return [
+      { command: 'start', description: 'Show help' },
+      { command: 'sessions', description: 'List sessions and connect' },
+      { command: 'models', description: 'List models and set default' },
+      { command: 'current', description: 'Show current session' },
+      { command: 'close', description: 'Close current session' },
+      { command: 'closeall', description: 'Close all sessions' },
+      { command: 'repos', description: 'GitHub repos (gh)' },
+      { command: 'workspaces', description: 'Local workspace folders' },
+    ];
+  }
+
+  /** Register slash commands for allowed users (Telegram autocomplete menu). */
+  private async syncBotCommands(): Promise<void> {
+    try {
+      await this.bot.telegram.deleteMyCommands();
+    } catch (err) {
+      logger.warn({ err }, 'Could not clear default Telegram command list');
+    }
+
+    if (this.allowedUserIds.size === 0) {
+      logger.warn(
+        'Telegram is enabled but TELEGRAM_ALLOWED_USER_IDS is empty — slash commands will not appear'
+      );
+      return;
+    }
+
+    for (const userId of this.allowedUserIds) {
+      await this.syncBotCommandsForUser(userId);
+    }
+  }
+
+  private async syncBotCommandsForUser(userId: number): Promise<void> {
+    try {
+      await this.bot.telegram.setMyCommands(this.botCommands(), {
+        scope: { type: 'chat', chat_id: userId },
+      });
+      logger.info({ userId }, 'Telegram slash commands registered');
+    } catch (err) {
+      logger.warn(
+        { err, userId },
+        'Could not set Telegram commands for user (send /start to the bot first)'
+      );
+    }
+  }
+
   private setupHandlers(): void {
     // Start command
     this.bot.command('start', async (ctx) => {
+      const userId = ctx.from?.id;
+      if (userId) {
+        await this.syncBotCommandsForUser(userId);
+      }
+
       await ctx.reply(
         '🤖 *Cursor Control Plane*\n\n' +
         'Available commands:\n' +
@@ -201,29 +257,36 @@ export class TelegramChannel implements Channel {
       }
     });
 
-    // Workspaces
+    // Workspaces (same local folders as the web repo picker)
     this.bot.command('workspaces', async (ctx) => {
       const chatId = String(ctx.chat?.id);
 
       try {
-        const { readdir } = await import('fs/promises');
-        const workspaceRoot = process.env.WORKSPACE_ROOT || '';
-        const entries = await readdir(workspaceRoot, { withFileTypes: true });
-        const dirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name);
+        const items = await listLocalWorkspaceItems(this.config);
 
-        if (dirs.length === 0) {
-          await ctx.reply('No workspaces found.');
+        if (items.length === 0) {
+          await ctx.reply(
+            `No workspace folders yet under:\n${this.config.workspaceRoot}\n\n` +
+            'Clone a repo with /repos or add folders there.'
+          );
           return;
         }
 
-        this.pendingWorkspaces.set(chatId, dirs);
+        const paths = items.map((item) => item.path);
+        this.pendingWorkspaces.set(chatId, paths);
 
-        const buttons = dirs.map((name, i) => {
-          return [Markup.button.callback(name, `ws:${i}`)];
+        const buttons = items.map((item, i) => {
+          const name = item.path.split(/[/\\]/).pop() || item.label.replace(/^local-/, '');
+          const label = name.slice(0, 60);
+          return [Markup.button.callback(label, `ws:${i}`)];
         });
 
-        await ctx.reply('Local workspaces — tap to use:', Markup.inlineKeyboard(buttons));
-      } catch {
+        await ctx.reply(
+          `Local workspaces under ${this.config.workspaceRoot} — tap to use:`,
+          Markup.inlineKeyboard(buttons)
+        );
+      } catch (err) {
+        logger.error({ err, workspaceRoot: this.config.workspaceRoot }, 'Failed to list workspaces');
         await ctx.reply('Could not list workspaces.');
       }
     });
@@ -275,7 +338,7 @@ export class TelegramChannel implements Channel {
         const { mkdir } = await import('fs/promises');
         const { resolve } = await import('path');
 
-        const workspaceRoot = process.env.WORKSPACE_ROOT || '';
+        const workspaceRoot = this.config.workspaceRoot;
         await mkdir(workspaceRoot, { recursive: true });
 
         const repoName = nwo.split('/')[1];
@@ -303,17 +366,15 @@ export class TelegramChannel implements Channel {
     this.bot.action(/ws:(\d+)/, async (ctx) => {
       const index = parseInt(ctx.match[1], 10);
       const chatId = String(ctx.chat?.id);
-      const workspaces = this.pendingWorkspaces.get(chatId);
+      const paths = this.pendingWorkspaces.get(chatId);
 
-      if (!workspaces || !workspaces[index]) {
+      if (!paths || !paths[index]) {
         await ctx.answerCbQuery('Invalid selection');
         return;
       }
 
-      const name = workspaces[index];
-      const { resolve } = await import('path');
-      const workspaceRoot = process.env.WORKSPACE_ROOT || '';
-      const path = resolve(workspaceRoot, name);
+      const path = paths[index];
+      const name = path.split(/[/\\]/).pop() || 'workspace';
 
       await ctx.answerCbQuery(`Using workspace: ${name}`);
 
@@ -330,83 +391,116 @@ export class TelegramChannel implements Channel {
       // Ignore commands
       if (text.startsWith('/')) return;
 
-      // Check if we have an active session
-      let sessionId = this.activeSessions.get(chatId);
+      logger.info({ chatId, textLength: text.length }, 'Telegram text message received');
 
-      if (!sessionId) {
-        // Try to find an existing open session
-        const sessions = this.sessionManager.listAllSessions(false);
-        const existing = sessions.find((s) => s.channel === 'telegram' && s.channelKey === chatId);
+      try {
+        // Check if we have an active session
+        let sessionId = this.activeSessions.get(chatId);
 
-        if (existing) {
-          sessionId = existing.id;
-          this.activeSessions.set(chatId, sessionId);
-        } else {
-          // Create new session without a specific repo
-          const session = await this.sessionManager.createSession('telegram', chatId, '', 'Telegram Session');
-          sessionId = session.id;
-          this.activeSessions.set(chatId, sessionId);
-          await ctx.reply('✅ Created new session. Send me code or questions!');
+        if (!sessionId) {
+          // Try to find an existing open session
+          const sessions = this.sessionManager.listAllSessions(false);
+          const existing = sessions.find((s) => s.channel === 'telegram' && s.channelKey === chatId);
+
+          if (existing) {
+            sessionId = existing.id;
+            this.activeSessions.set(chatId, sessionId);
+            logger.info({ chatId, sessionId }, 'Reconnected to existing Telegram session');
+          } else {
+            // Create new session without a specific repo
+            const session = await this.sessionManager.createSession('telegram', chatId, '', 'Telegram Session');
+            sessionId = session.id;
+            this.activeSessions.set(chatId, sessionId);
+            logger.info({ chatId, sessionId }, 'Created new Telegram session');
+            await ctx.reply('✅ Created new session. Processing your message…');
+          }
         }
+
+        await ctx.sendChatAction('typing');
+        await this.sessionManager.sendSessionMessage(sessionId, text, 'telegram', chatId);
+        logger.info({ chatId, sessionId }, 'Telegram message dispatched to agent');
+      } catch (err) {
+        logger.error({ err, chatId }, 'Failed to handle Telegram text message');
+        await ctx.reply(
+          `❌ Error: ${err instanceof Error ? err.message : String(err)}`
+        ).catch((replyErr) => {
+          logger.error({ err: replyErr, chatId }, 'Failed to send Telegram error reply');
+        });
       }
-
-      // Send message to session
-      await this.sessionManager.sendSessionMessage(sessionId, text, 'telegram', chatId);
-
-      // The response will come through the event bus and be handled by onStream
     });
   }
 
   async start(): Promise<void> {
-    // Launch bot
     await this.bot.launch();
-
-    // Set up event bus listener for streaming responses
-    this.eventBus.on('agent_stream', (event) => {
-      const { sessionId, text } = event as { type: 'agent_stream'; sessionId: string; text: string };
-
-      // Find which chat has this session
-      for (const [chatId, sid] of this.activeSessions) {
-        if (sid === sessionId) {
-          // Send streaming text
-          this.bot.telegram.sendMessage(chatId, text).catch((err) => {
-            console.error('Failed to send Telegram message:', err);
-          });
-          break;
-        }
-      }
-    });
-
-    console.log('Telegram bot started');
+    await this.syncBotCommands();
+    logger.info('Telegram bot polling started');
   }
 
   async stop(): Promise<void> {
     this.bot.stop();
-    console.log('Telegram bot stopped');
+    logger.info('Telegram bot stopped');
   }
 
   async sendMessage(conversationId: string, text: string): Promise<void> {
-    // Split long messages and format with markdown
-    const chunks = splitForTelegram(text, 4096);
+    if (!text) return;
 
-    for (const chunk of chunks) {
-      if (chunk.entities && chunk.entities.length > 0) {
-        // Send with entities for rich formatting
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const entities: any[] = chunk.entities.map((e) => ({
-          type: e.type,
-          offset: e.offset,
-          length: e.length,
-          ...(e.url && { url: e.url }),
-          ...(e.language && { language: e.language }),
-        }));
-        await this.bot.telegram.sendMessage(conversationId, chunk.text, { entities });
-      } else {
-        // Plain text - escape markdown characters
-        const escaped = chunk.text.replace(/[_*[`]/g, '\\$&');
-        await this.bot.telegram.sendMessage(conversationId, escaped, { parse_mode: 'MarkdownV2' });
+    logger.debug({ conversationId, textLength: text.length }, 'Sending Telegram message');
+
+    if (text.length <= 4096) {
+      await this.sendMarkdownMessage(conversationId, text);
+      return;
+    }
+
+    for (const chunk of splitPlainText(text, 4096)) {
+      await this.sendMarkdownMessage(conversationId, chunk);
+    }
+  }
+
+  /** Send markdown with HTML formatting (matches web bold/italic); plain text on failure. */
+  private async sendMarkdownMessage(conversationId: string, markdown: string): Promise<void> {
+    const html = markdownToTelegramHtml(markdown);
+    if (html) {
+      try {
+        await this.bot.telegram.sendMessage(conversationId, html, { parse_mode: 'HTML' });
+        return;
+      } catch (err) {
+        logger.warn({ err, conversationId }, 'Telegram rejected HTML message, sending plain');
       }
     }
+
+    const plain = markdownToTelegram(markdown);
+    try {
+      await this.bot.telegram.sendMessage(conversationId, plain.text.slice(0, 4096));
+    } catch (err) {
+      logger.error({ err, conversationId }, 'Failed to send Telegram message chunk');
+      throw err;
+    }
+  }
+
+  private async sendFormattedWithKeyboard(
+    conversationId: string,
+    text: string,
+    keyboard: ReturnType<typeof Markup.inlineKeyboard>
+  ): Promise<void> {
+    const html = markdownToTelegramHtml(text);
+    if (html) {
+      try {
+        await this.bot.telegram.sendMessage(conversationId, html, {
+          parse_mode: 'HTML',
+          ...keyboard,
+        });
+        return;
+      } catch (err) {
+        logger.warn({ err, conversationId }, 'Telegram rejected formatted question, sending plain');
+      }
+    }
+
+    const plain = markdownToTelegram(text);
+    await this.bot.telegram.sendMessage(
+      conversationId,
+      plain.text.slice(0, 4096),
+      keyboard
+    );
   }
 
   async askQuestion(
@@ -421,7 +515,11 @@ export class TelegramChannel implements Channel {
       return [Markup.button.callback(opt, `q:${token}:${i}`)];
     });
 
-    await this.bot.telegram.sendMessage(conversationId, question, Markup.inlineKeyboard(buttons));
+    await this.sendFormattedWithKeyboard(
+      conversationId,
+      question,
+      Markup.inlineKeyboard(buttons)
+    );
 
     return new Promise((resolve) => {
       this.pendingQuestions.set(token, {

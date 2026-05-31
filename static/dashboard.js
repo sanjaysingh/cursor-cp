@@ -13,6 +13,18 @@
   }
 })();
 
+(function setupMarked() {
+  if (typeof marked === 'undefined') return;
+
+  // marked v5+ uses marked.use(); older builds use setOptions()
+  const options = { gfm: true, breaks: true };
+  if (typeof marked.use === 'function') {
+    marked.use(options);
+  } else if (typeof marked.setOptions === 'function') {
+    marked.setOptions(options);
+  }
+})();
+
 function dashboard() {
   return {
     // State
@@ -50,13 +62,12 @@ function dashboard() {
       return this.sessions.find(s => s.id === this.selectedSessionId);
     },
 
+    get atSessionLimit() {
+      return this.sessions.length >= this.maxSessions;
+    },
+
     // Methods
     async init() {
-      if (typeof marked !== 'undefined') {
-        marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
-      }
-
-      // Load sidebar state
       try {
         const saved = localStorage.getItem('cp-sidebar-collapsed');
         if (saved === 'true') this.sidebarCollapsed = true;
@@ -66,7 +77,6 @@ function dashboard() {
         }
       } catch {}
 
-      // Load initial data
       await this.loadDashboardConfig();
       await this.loadRepoPicker();
       await this.refreshSessions();
@@ -74,10 +84,36 @@ function dashboard() {
       await this.fetchModels();
     },
 
+    sessionWorkspacePath(session) {
+      if (!session) return '—';
+      const repoPath = session.repo_path != null ? String(session.repo_path).trim() : '';
+      if (repoPath) return repoPath;
+      const root = (this.workspaceRoot || '').trim();
+      return root || 'Workspace root';
+    },
+
+    mergeSession(session) {
+      if (!session?.id) return;
+      const idx = this.sessions.findIndex(s => s.id === session.id);
+      if (idx >= 0) {
+        this.sessions[idx] = session;
+      } else {
+        this.sessions.unshift(session);
+      }
+    },
+
     toggleSidebar() {
       this.sidebarCollapsed = !this.sidebarCollapsed;
       try {
-        localStorage.setItem('cp-sidebar-collapsed', this.sidebarCollapsed);
+        localStorage.setItem('cp-sidebar-collapsed', this.sidebarCollapsed ? 'true' : 'false');
+      } catch {}
+    },
+
+    collapseSidebarIfMobile() {
+      if (!window.matchMedia('(max-width: 767px)').matches) return;
+      this.sidebarCollapsed = true;
+      try {
+        localStorage.setItem('cp-sidebar-collapsed', 'true');
       } catch {}
     },
 
@@ -89,6 +125,7 @@ function dashboard() {
           this.webChannelKey = d.web_channel_key || 'web:default';
           this.workspaceRoot = d.workspace_root || '';
           this.defaultModelPreference = d.default_model || '';
+          this.maxSessions = d.max_sessions || this.maxSessions;
         }
       } catch (err) {
         console.error('Failed to load dashboard config:', err);
@@ -201,28 +238,30 @@ function dashboard() {
       }
     },
 
+    async loadMessages(sessionId = this.selectedSessionId) {
+      if (!sessionId) return;
+
+      try {
+        const r = await fetch(`/api/sessions/${sessionId}/messages`);
+        if (r.ok) {
+          this.messages = await r.json();
+          this.scrollToBottom();
+        }
+      } catch (err) {
+        console.error('Failed to load messages:', err);
+      }
+    },
+
     async selectSession(id) {
       this.selectedSessionId = id;
       this.messages = [];
       this.streamText = '';
       this.pendingQuestion = null;
 
-      // Collapse sidebar on mobile
-      if (window.matchMedia('(max-width: 767px)').matches) {
-        this.sidebarCollapsed = true;
-      }
+      // Collapse sidebar on mobile after selecting a session
+      this.collapseSidebarIfMobile();
 
-      // Load messages
-      try {
-        const r = await fetch(`/api/sessions/${id}/messages`);
-        if (r.ok) {
-          this.messages = await r.json();
-        }
-      } catch (err) {
-        console.error('Failed to load messages:', err);
-      }
-
-      this.scrollToBottom();
+      await this.loadMessages(id);
     },
 
     async sendMessage() {
@@ -253,6 +292,9 @@ function dashboard() {
 
         const session = await r.json();
         this.updateSession(session);
+        this.awaitingAgentReply = false;
+        this.streamText = '';
+        await this.loadMessages();
       } catch (err) {
         console.error('Failed to send message:', err);
         this.awaitingAgentReply = false;
@@ -260,8 +302,6 @@ function dashboard() {
     },
 
     async closeSession(id) {
-      if (!confirm('Close this session? All messages will be deleted.')) return;
-
       try {
         await fetch(`/api/sessions/${id}/close`, { method: 'POST' });
         this.sessions = this.sessions.filter(s => s.id !== id);
@@ -271,6 +311,21 @@ function dashboard() {
         }
       } catch (err) {
         console.error('Failed to close session:', err);
+      }
+    },
+
+    async closeAllSessions() {
+      if (!this.sessions.length) return;
+
+      try {
+        await fetch('/api/sessions/close-all', { method: 'POST' });
+        this.sessions = [];
+        this.selectedSessionId = null;
+        this.messages = [];
+        this.streamText = '';
+        this.pendingQuestion = null;
+      } catch (err) {
+        console.error('Failed to close all sessions:', err);
       }
     },
 
@@ -291,10 +346,7 @@ function dashboard() {
     },
 
     updateSession(session) {
-      const idx = this.sessions.findIndex(s => s.id === session.id);
-      if (idx >= 0) {
-        this.sessions[idx] = session;
-      }
+      this.mergeSession(session);
     },
 
     scrollToBottom() {
@@ -308,12 +360,28 @@ function dashboard() {
 
     renderMarkdown(text) {
       if (!text) return '';
-      try {
-        const raw = marked.parse(text);
-        return DOMPurify.sanitize(raw, { ALLOWED_TAGS: ['*'] });
-      } catch {
-        return text;
+      if (typeof marked === 'undefined') {
+        return this.escapeHtml(text).replace(/\n/g, '<br>');
       }
+
+      try {
+        const raw = typeof marked.parse === 'function'
+          ? marked.parse(text, { async: false })
+          : marked(text);
+        return DOMPurify.sanitize(raw, {
+          USE_PROFILES: { html: true },
+        });
+      } catch {
+        return this.escapeHtml(text).replace(/\n/g, '<br>');
+      }
+    },
+
+    escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
     },
 
     connectWebSocket() {
@@ -353,6 +421,11 @@ function dashboard() {
 
         case 'session_updated':
           this.updateSession(data.session);
+          if (data.session?.id === this.selectedSessionId && data.session?.activity === 'idle') {
+            this.awaitingAgentReply = false;
+            this.streamText = '';
+            this.loadMessages(data.session.id);
+          }
           break;
 
         case 'session_removed':

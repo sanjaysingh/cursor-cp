@@ -24,6 +24,7 @@ export class SessionRepository {
       status: r.status as Session['status'],
       activity: 'idle',
       model: r.model as string | null,
+      sdkAgentId: (r.sdk_agent_id as string | null) ?? null,
       createdAt: r.created_at as string,
       updatedAt: r.updated_at as string,
       closedAt: r.closed_at as string | null,
@@ -79,7 +80,7 @@ export class SessionRepository {
 
   insert(session: Omit<Session, 'repoName' | 'activity' | 'errorMessage' | 'outputPreview'>): void {
     const stmt = this.db.prepare(
-      'INSERT INTO agent_sessions (id, channel, channel_key, repo_path, title, status, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO agent_sessions (id, channel, channel_key, repo_path, title, status, model, sdk_agent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     stmt.run(
       session.id,
@@ -89,9 +90,17 @@ export class SessionRepository {
       session.title,
       session.status,
       session.model,
+      session.sdkAgentId ?? null,
       session.createdAt,
       session.updatedAt
     );
+  }
+
+  updateSdkAgentId(id: string, sdkAgentId: string): void {
+    const stmt = this.db.prepare(
+      'UPDATE agent_sessions SET sdk_agent_id = ?, updated_at = ? WHERE id = ?'
+    );
+    stmt.run(sdkAgentId, new Date().toISOString(), id);
   }
 
   updateStatus(id: string, status: Session['status']): void {

@@ -3,6 +3,7 @@
  */
 
 import type { Channel, ChannelRegistry } from './base.js';
+import { logger } from '../util/logger.js';
 
 export class ChannelRegistryImpl implements ChannelRegistry {
   private channels: Map<string, Channel> = new Map();
@@ -21,13 +22,23 @@ export class ChannelRegistryImpl implements ChannelRegistry {
 
   async startAll(): Promise<void> {
     for (const channel of this.channels.values()) {
-      await channel.start();
+      try {
+        await channel.start();
+        logger.info({ channel: channel.name }, 'Channel started');
+      } catch (err) {
+        logger.error({ err, channel: channel.name }, 'Channel failed to start');
+      }
     }
   }
 
   async stopAll(): Promise<void> {
     for (const channel of this.channels.values()) {
-      await channel.stop();
+      try {
+        await channel.stop();
+        logger.info({ channel: channel.name }, 'Channel stopped');
+      } catch (err) {
+        logger.error({ err, channel: channel.name }, 'Channel failed to stop');
+      }
     }
   }
 }

@@ -1,7 +1,13 @@
 /**
- * Telegram Markdown Formatting
- * Converts Markdown to Telegram's MessageEntity format for rich text
+ * Convert Markdown to Telegram Bot API text + MessageEntity (no parse_mode).
+ * Mirrors Python control_plane/telegram_format.py.
  */
+
+import { markdownToTelegramEntities } from './markdown-to-telegram-entities.js';
+import { markdownToTelegramHtml } from './markdown-to-telegram-html.js';
+import { logger } from '../util/logger.js';
+
+export { markdownToTelegramHtml };
 
 export type MessageEntityType =
   | 'bold'
@@ -12,7 +18,8 @@ export type MessageEntityType =
   | 'text_mention'
   | 'underline'
   | 'strikethrough'
-  | 'spoiler';
+  | 'spoiler'
+  | 'blockquote';
 
 export interface MessageEntity {
   type: MessageEntityType;
@@ -27,334 +34,99 @@ export interface FormattedText {
   entities: MessageEntity[];
 }
 
+const ENTITY_TYPE_MAP: Record<string, MessageEntityType> = {
+  messageEntityBold: 'bold',
+  messageEntityItalic: 'italic',
+  messageEntityCode: 'code',
+  messageEntityPre: 'pre',
+  messageEntityTextUrl: 'text_link',
+  messageEntityStrike: 'strikethrough',
+  messageEntityStrikethrough: 'strikethrough',
+  messageEntityBlockquote: 'blockquote',
+  messageEntityUnderline: 'underline',
+  messageEntitySpoiler: 'spoiler',
+};
+
 /**
- * Parse markdown and extract Telegram entities
- * Returns plain text with entity positions for Telegram API
+ * Convert Markdown to plain text + entities for Telegram (UTF-16 offsets).
+ * Returns plain text with no entities on failure or when text exceeds 4096 chars.
  */
 export function markdownToTelegram(text: string): FormattedText {
   if (!text) {
     return { text: '', entities: [] };
   }
 
-  // Telegram has a 4096 character limit for messages with entities
-  if (text.length > 4096) {
-    return { text: text.slice(0, 4096), entities: [] };
-  }
+  try {
+    const { text: plain, entities: rawEntities } = markdownToTelegramEntities(text);
 
-  const entities: MessageEntity[] = [];
-  let plainText = text;
-  let offsetShift = 0;
-
-  // Process patterns in order of priority
-  // 1. Code blocks (```) - must be before inline code
-  plainText = processCodeBlocks(plainText, entities, offsetShift);
-
-  // Recalculate offset after code blocks
-  offsetShift = text.length - plainText.length;
-
-  // 2. Inline code (`)
-  plainText = processInlineCode(plainText, entities);
-
-  // 3. Bold (** or __)
-  plainText = processBold(plainText, entities);
-
-  // 4. Italic (* or _)
-  plainText = processItalic(plainText, entities);
-
-  // 5. Strikethrough (~~)
-  plainText = processStrikethrough(plainText, entities);
-
-  // 6. Links [text](url)
-  plainText = processLinks(plainText, entities);
-
-  // Clean up any remaining markdown characters
-  plainText = cleanupMarkdown(plainText);
-
-  // Sort entities by offset for correct rendering order
-  entities.sort((a, b) => a.offset - b.offset);
-
-  return { text: plainText.slice(0, 4096), entities };
-}
-
-/**
- * Process code blocks ```code``` or ```lang\ncode```
- */
-function processCodeBlocks(
-  text: string,
-  entities: MessageEntity[],
-  baseOffset: number
-): string {
-  const codeBlockRegex = /```(\w+)?\n?([\s\S]*?)```/g;
-  let result = text;
-  let match;
-  const replacements: Array<{
-    start: number;
-    end: number;
-    replacement: string;
-    entity: MessageEntity;
-  }> = [];
-
-  while ((match = codeBlockRegex.exec(text)) !== null) {
-    const fullMatch = match[0];
-    const language = match[1];
-    const code = match[2].trimEnd();
-    const start = match.index;
-
-    replacements.push({
-      start,
-      end: start + fullMatch.length,
-      replacement: code,
-      entity: {
-        type: 'pre',
-        offset: start - baseOffset,
-        length: code.length,
-        language: language || undefined,
-      },
-    });
-  }
-
-  // Apply replacements in reverse order to maintain indices
-  // Store temporarily and add in correct order
-  const tempEntities: MessageEntity[] = [];
-  for (let i = replacements.length - 1; i >= 0; i--) {
-    const { start, end, replacement, entity } = replacements[i];
-    result = result.slice(0, start) + replacement + result.slice(end);
-    tempEntities.push(entity);
-  }
-  // Add in original order (reversed from processing)
-  entities.push(...tempEntities.reverse());
-
-  return result;
-}
-
-/**
- * Process inline code `code`
- */
-function processInlineCode(text: string, entities: MessageEntity[]): string {
-  const inlineCodeRegex = /`([^`]+)`/g;
-  let result = text;
-  let match;
-  const replacements: Array<{
-    start: number;
-    end: number;
-    replacement: string;
-    entity: MessageEntity;
-  }> = [];
-
-  while ((match = inlineCodeRegex.exec(text)) !== null) {
-    const fullMatch = match[0];
-    const code = match[1];
-    const start = match.index;
-
-    // Skip if inside a code block (already processed)
-    if (isInsideCodeBlock(text, start)) {
-      continue;
+    if (plain.length > 4096) {
+      return { text: text.slice(0, 4096), entities: [] };
     }
 
-    replacements.push({
-      start,
-      end: start + fullMatch.length,
-      replacement: code,
-      entity: {
-        type: 'code',
-        offset: start,
-        length: code.length,
-      },
-    });
-  }
+    if (!rawEntities.length) {
+      // No inline/block formatting — keep original spacing and newlines
+      return { text: text.slice(0, 4096), entities: [] };
+    }
 
-  // Apply in reverse order
-  const tempEntities: MessageEntity[] = [];
-  for (let i = replacements.length - 1; i >= 0; i--) {
-    const { start, end, replacement, entity } = replacements[i];
-    // Recalculate offset based on current result length
-    entity.offset = start;
-    result = result.slice(0, start) + replacement + result.slice(end);
-    tempEntities.push(entity);
-  }
-  entities.push(...tempEntities.reverse());
+    const entities: MessageEntity[] = [];
+    for (const entity of rawEntities) {
+      const type = ENTITY_TYPE_MAP[entity._];
+      if (!type) {
+        logger.debug({ entityType: entity._ }, 'Unknown Telegram entity type, skipping');
+        continue;
+      }
 
-  return result;
-}
-
-/**
- * Process bold **text** or __text__
- */
-function processBold(text: string, entities: MessageEntity[]): string {
-  const boldRegex = /(\*\*|__)(.+?)\1/g;
-  return processPattern(text, entities, boldRegex, 'bold');
-}
-
-/**
- * Process italic *text* or _text_
- */
-function processItalic(text: string, entities: MessageEntity[]): string {
-  const italicRegex = /(\*|_)(.+?)\1/g;
-  return processPattern(text, entities, italicRegex, 'italic');
-}
-
-/**
- * Process strikethrough ~~text~~
- */
-function processStrikethrough(text: string, entities: MessageEntity[]): string {
-  const strikeRegex = /~~(.+?)~~/g;
-  let result = text;
-  let match;
-  const replacements: Array<{
-    start: number;
-    end: number;
-    replacement: string;
-    entity: MessageEntity;
-  }> = [];
-
-  while ((match = strikeRegex.exec(text)) !== null) {
-    const fullMatch = match[0];
-    const content = match[1];
-    const start = match.index;
-
-    replacements.push({
-      start,
-      end: start + fullMatch.length,
-      replacement: content,
-      entity: {
-        type: 'strikethrough',
-        offset: start,
-        length: content.length,
-      },
-    });
-  }
-
-  // Apply in reverse order to maintain indices
-  const tempEntities: MessageEntity[] = [];
-  for (let i = replacements.length - 1; i >= 0; i--) {
-    const { start, end, replacement, entity } = replacements[i];
-    entity.offset = start;
-    result = result.slice(0, start) + replacement + result.slice(end);
-    tempEntities.push(entity);
-  }
-  entities.push(...tempEntities.reverse());
-
-  return result;
-}
-
-/**
- * Process links [text](url)
- */
-function processLinks(text: string, entities: MessageEntity[]): string {
-  const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-  let result = text;
-  let match;
-  const replacements: Array<{
-    start: number;
-    end: number;
-    replacement: string;
-    entity: MessageEntity;
-  }> = [];
-
-  while ((match = linkRegex.exec(text)) !== null) {
-    const fullMatch = match[0];
-    const linkText = match[1];
-    const url = match[2];
-    const start = match.index;
-
-    replacements.push({
-      start,
-      end: start + fullMatch.length,
-      replacement: linkText,
-      entity: {
-        type: 'text_link',
-        offset: start,
-        length: linkText.length,
-        url,
-      },
-    });
-  }
-
-  // Apply in reverse order
-  const tempEntities: MessageEntity[] = [];
-  for (let i = replacements.length - 1; i >= 0; i--) {
-    const { start, end, replacement, entity } = replacements[i];
-    entity.offset = start;
-    result = result.slice(0, start) + replacement + result.slice(end);
-    tempEntities.push(entity);
-  }
-  entities.push(...tempEntities.reverse());
-
-  return result;
-}
-
-/**
- * Generic pattern processor for simple markdown with delimiters
- * Pattern format: (delimiter)(content)\1
- */
-function processPattern(
-  text: string,
-  entities: MessageEntity[],
-  regex: RegExp,
-  type: MessageEntityType
-): string {
-  let result = text;
-  let match;
-  const replacements: Array<{
-    start: number;
-    end: number;
-    replacement: string;
-    entity: MessageEntity;
-  }> = [];
-
-  while ((match = regex.exec(text)) !== null) {
-    const fullMatch = match[0];
-    // match[1] is delimiter, match[2] is content
-    const content = match[2] || match[1]; // fallback for single capture group patterns
-    const start = match.index;
-
-    if (!content) continue;
-
-    replacements.push({
-      start,
-      end: start + fullMatch.length,
-      replacement: content,
-      entity: {
+      entities.push({
         type,
-        offset: start,
-        length: content.length,
-      },
-    });
+        offset: entity.offset,
+        length: entity.length,
+        ...(entity.url ? { url: entity.url } : {}),
+        ...(entity.language ? { language: entity.language } : {}),
+      });
+    }
+
+    return { text: plain, entities };
+  } catch (err) {
+    logger.debug({ err }, 'markdownToTelegramEntities failed');
+    return { text: text.slice(0, 4096), entities: [] };
+  }
+}
+
+/** Send plain text in 4096-char chunks (no parse_mode). */
+export function splitPlainText(text: string, maxLength = 4096): string[] {
+  if (text.length <= maxLength) {
+    return [text];
   }
 
-  // Apply in reverse order
-  const tempEntities: MessageEntity[] = [];
-  for (let i = replacements.length - 1; i >= 0; i--) {
-    const { start, end, replacement, entity } = replacements[i];
-    entity.offset = start;
-    result = result.slice(0, start) + replacement + result.slice(end);
-    tempEntities.push(entity);
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    let splitPoint = maxLength;
+
+    const paragraphBreak = remaining.lastIndexOf('\n\n', maxLength);
+    if (paragraphBreak > maxLength * 0.5) {
+      splitPoint = paragraphBreak + 2;
+    } else {
+      const sentenceEnd = remaining.lastIndexOf('. ', maxLength);
+      if (sentenceEnd > maxLength * 0.5) {
+        splitPoint = sentenceEnd + 2;
+      }
+    }
+
+    const chunk = remaining.slice(0, splitPoint).trimEnd();
+    if (chunk) {
+      chunks.push(chunk);
+    }
+    remaining = remaining.slice(splitPoint).trimStart();
   }
-  entities.push(...tempEntities.reverse());
 
-  return result;
+  return chunks;
 }
 
 /**
- * Check if position is inside a code block
- */
-function isInsideCodeBlock(text: string, position: number): boolean {
-  const before = text.slice(0, position);
-  const codeBlockMatches = before.match(/```/g);
-  return codeBlockMatches ? codeBlockMatches.length % 2 === 1 : false;
-}
-
-/**
- * Clean up any remaining markdown characters that weren't processed
- */
-function cleanupMarkdown(text: string): string {
-  // Remove stray backslashes before markdown chars (except in code)
-  return text.replace(/\\([*_`[~])/g, '$1');
-}
-
-/**
- * Split long messages for Telegram (max 4096 chars)
- * Returns array of chunks that can be sent separately
+ * Split long messages for Telegram.
+ * Short messages get markdown entities; long messages are sent as plain chunks.
  */
 export function splitForTelegram(
   text: string,
@@ -362,36 +134,22 @@ export function splitForTelegram(
 ): Array<{ text: string; entities?: MessageEntity[] }> {
   if (text.length <= maxLength) {
     const formatted = markdownToTelegram(text);
-    return [{ text: formatted.text, entities: formatted.entities }];
+    if (formatted.entities.length > 0) {
+      return [{ text: formatted.text, entities: formatted.entities }];
+    }
+    return [{ text: formatted.text }];
   }
 
-  const chunks: Array<{ text: string; entities?: MessageEntity[] }> = [];
-  let remaining = text;
+  return splitPlainText(text, maxLength).map((chunk) => ({ text: chunk }));
+}
 
-  while (remaining.length > 0) {
-    // Try to split at a paragraph or sentence boundary
-    let splitPoint = maxLength;
-
-    // Look for paragraph break
-    const paragraphBreak = remaining.lastIndexOf('\n\n', maxLength);
-    if (paragraphBreak > maxLength * 0.5) {
-      splitPoint = paragraphBreak + 2;
-    } else {
-      // Look for sentence end
-      const sentenceEnd = remaining.lastIndexOf('. ', maxLength);
-      if (sentenceEnd > maxLength * 0.5) {
-        splitPoint = sentenceEnd + 2;
-      }
-    }
-
-    const chunk = remaining.slice(0, splitPoint).trim();
-    if (chunk) {
-      const formatted = markdownToTelegram(chunk);
-      chunks.push({ text: formatted.text, entities: formatted.entities });
-    }
-
-    remaining = remaining.slice(splitPoint).trimStart();
-  }
-
-  return chunks;
+/** Map internal entities to Telegraf/Telegram Bot API shape. */
+export function toTelegramApiEntities(entities: MessageEntity[]) {
+  return entities.map((e) => ({
+    type: e.type,
+    offset: e.offset,
+    length: e.length,
+    ...(e.url ? { url: e.url } : {}),
+    ...(e.language ? { language: e.language } : {}),
+  }));
 }
