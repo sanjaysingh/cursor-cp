@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Fastify from 'fastify';
 import { registerApi, API_PREFIX } from './register-api.js';
+import { getVersion } from '../cli/help.js';
 import type { SessionManager } from '../core/session-manager.js';
 import type { AgentService } from '../core/agent-service.js';
 import type { WebChannel } from '../channels/web-channel.js';
@@ -82,7 +83,7 @@ describe('API Routes', () => {
       expect(response.statusCode).toBe(200);
       expect(JSON.parse(response.payload)).toEqual({
         status: 'ok',
-        version: '0.2.5',
+        version: getVersion(),
       });
     });
   });

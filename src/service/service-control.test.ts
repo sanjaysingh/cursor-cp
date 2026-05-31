@@ -5,6 +5,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ServiceController } from './service-control.js';
 
+vi.mock('fs', () => ({
+  existsSync: vi.fn(() => false),
+}));
+
 describe('ServiceController', () => {
   let controller: ServiceController;
 
@@ -13,11 +17,6 @@ describe('ServiceController', () => {
   });
 
   it('should detect if service is not installed', () => {
-    // Mock the marker file check
-    vi.mock('fs', () => ({
-      existsSync: vi.fn(() => false),
-    }));
-
     expect(controller.isInstalled()).toBe(false);
   });
 

@@ -11,6 +11,7 @@ import { listLocalWorkspaceItems } from '../core/repo-picker.js';
 import { splitPlainText, markdownToTelegram, markdownToTelegramHtml } from '../format/telegram-format.js';
 import { createHash } from 'crypto';
 import { logger } from '../util/logger.js';
+import { getVersion } from '../cli/help.js';
 
 interface PendingQuestion {
   resolve: (answer: string) => void;
@@ -78,6 +79,7 @@ export class TelegramChannel implements Channel {
       { command: 'closeall', description: 'Close all sessions' },
       { command: 'repos', description: 'GitHub repos (gh)' },
       { command: 'workspaces', description: 'Local workspace folders' },
+      { command: 'version', description: 'Show Cursor Control Plane version' },
     ];
   }
 
@@ -132,10 +134,16 @@ export class TelegramChannel implements Channel {
         '/workspaces - Browse local workspaces\n' +
         '/current - Show current session\n' +
         '/close - Close current session\n' +
-        '/closeall - Close all sessions\n\n' +
+        '/closeall - Close all sessions\n' +
+        '/version - Show version\n\n' +
         'Send me any text to start or continue a session.',
         { parse_mode: 'Markdown' }
       );
+    });
+
+    // Version
+    this.bot.command('version', async (ctx) => {
+      await ctx.reply(`Cursor Control Plane v${getVersion()}`);
     });
 
     // Sessions list

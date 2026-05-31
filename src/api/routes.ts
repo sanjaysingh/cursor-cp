@@ -16,6 +16,7 @@ import {
   CreateRunRequest,
 } from '../models/schemas.js';
 import { buildRepoPicker } from '../core/repo-picker.js';
+import { getVersion } from '../cli/help.js';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { readdir } from 'fs/promises';
@@ -39,7 +40,7 @@ export async function registerRoutes(
   // Health check
   fastify.get('/health', async () => ({
     status: 'ok',
-    version: '0.2.5',
+    version: getVersion(),
   }));
 
   // Dashboard config
