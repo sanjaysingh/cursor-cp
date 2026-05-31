@@ -26,6 +26,38 @@ function resolveInstallDir(): string {
   return process.env.CURSOR_CP_INSTALL_DIR?.trim() || DEFAULT_INSTALL_DIR;
 }
 
+/** PATH for background services — launchd/systemd omit shell profile paths. */
+function resolveServicePath(): string {
+  const home = homedir();
+  const parts = new Set<string>();
+  const add = (entry: string) => {
+    const trimmed = entry.trim();
+    if (trimmed) parts.add(trimmed);
+  };
+
+  for (const entry of (process.env.PATH ?? '').split(':')) {
+    add(entry);
+  }
+
+  add(resolve(home, '.local/bin'));
+  add('/opt/homebrew/bin');
+  add('/opt/homebrew/sbin');
+  add('/usr/local/bin');
+  add('/usr/bin');
+  add('/bin');
+  add('/usr/sbin');
+  add('/sbin');
+
+  return [...parts].join(':');
+}
+
+function escapePlistString(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 interface ServiceMarker {
   type: 'systemd-user' | 'launchd';
   unit?: string;
@@ -144,6 +176,7 @@ export class ServiceController {
     const plistPath = this.launchdPlistPath(label);
     const nodePath = resolveNodePath();
     const cliPath = resolve(resolveInstallDir(), 'dist/cli/index.js');
+    const servicePath = escapePlistString(resolveServicePath());
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -161,6 +194,8 @@ export class ServiceController {
     <dict>
         <key>NODE_ENV</key>
         <string>production</string>
+        <key>PATH</key>
+        <string>${servicePath}</string>
     </dict>
     <key>WorkingDirectory</key>
     <string>${projectHomeDir()}</string>
@@ -201,6 +236,7 @@ export class ServiceController {
     const unit = 'cursor-cp.service';
     const unitPath = resolve(homedir(), '.config/systemd/user', unit);
     const binPath = resolve(homedir(), '.local/bin/cursor-cp');
+    const servicePath = resolveServicePath();
 
     const service = `[Unit]
 Description=Cursor Control Plane
@@ -212,6 +248,7 @@ ExecStart=${binPath} serve
 Restart=on-failure
 RestartSec=10
 Environment=NODE_ENV=production
+Environment=PATH=${servicePath}
 WorkingDirectory=${projectHomeDir()}
 StandardOutput=journal
 StandardError=journal

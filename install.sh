@@ -156,6 +156,20 @@ init_user_config() {
     fi
 }
 
+refresh_daemon_if_enabled() {
+    local marker="$HOME/cursor-cp/data/service.json"
+    if [ ! -f "$marker" ] || [ ! -x "$LAUNCHER" ]; then
+        return
+    fi
+
+    log "Updating background daemon configuration..."
+    if "$LAUNCHER" daemon enable; then
+        success "Background daemon updated"
+    else
+        warn "Could not update daemon. Run: cursor-cp daemon enable"
+    fi
+}
+
 # --- Summary ----------------------------------------------------------------
 
 print_summary() {
@@ -191,6 +205,7 @@ main() {
     build_app
     create_launcher
     init_user_config
+    refresh_daemon_if_enabled
     print_summary
 }
 
