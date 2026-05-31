@@ -1,6 +1,6 @@
 import { printDaemonHelp } from '../cli/help.js';
 
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
 import { resolve } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
@@ -361,20 +361,20 @@ WantedBy=default.target`;
         // Ignore
       }
       if (existsSync(unitPath)) {
-        require('fs').unlinkSync(unitPath);
+        unlinkSync(unitPath);
       }
     } else if (this.marker.type === 'launchd') {
       const label = this.marker.label!;
       const plistPath = this.launchdPlistPath(label);
       this.bootoutLaunchd(label, plistPath);
       if (existsSync(plistPath)) {
-        require('fs').unlinkSync(plistPath);
+        unlinkSync(plistPath);
       }
     }
 
     // Remove marker
     if (existsSync(SERVICE_MARKER)) {
-      require('fs').unlinkSync(SERVICE_MARKER);
+      unlinkSync(SERVICE_MARKER);
     }
     this.marker = null;
 
