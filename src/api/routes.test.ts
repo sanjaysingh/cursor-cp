@@ -82,7 +82,7 @@ describe('API Routes', () => {
       expect(response.statusCode).toBe(200);
       expect(JSON.parse(response.payload)).toEqual({
         status: 'ok',
-        version: '0.2.3',
+        version: '0.2.4',
       });
     });
   });

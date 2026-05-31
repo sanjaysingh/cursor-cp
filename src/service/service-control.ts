@@ -15,8 +15,23 @@ function launchdDomain(): string {
 }
 
 function resolveNodePath(): string {
+  const candidates = [
+    process.execPath,
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
   try {
-    return execSync('node -p process.execPath', { encoding: 'utf-8' }).trim();
+    return execSync('node -p process.execPath', {
+      encoding: 'utf-8',
+      env: process.env,
+    }).trim();
   } catch {
     throw new Error('Node.js not found. Install Node.js 20+ and ensure it is on PATH.');
   }
@@ -235,7 +250,8 @@ export class ServiceController {
   private async installSystemd(): Promise<void> {
     const unit = 'cursor-cp.service';
     const unitPath = resolve(homedir(), '.config/systemd/user', unit);
-    const binPath = resolve(homedir(), '.local/bin/cursor-cp');
+    const nodePath = resolveNodePath();
+    const cliPath = resolve(resolveInstallDir(), 'dist/cli/index.js');
     const servicePath = resolveServicePath();
 
     const service = `[Unit]
@@ -244,7 +260,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${binPath} serve
+ExecStart=${nodePath} ${cliPath} serve
 Restart=on-failure
 RestartSec=10
 Environment=NODE_ENV=production

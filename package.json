@@ -1,6 +1,6 @@
 {
   "name": "cursor-cp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Cursor Control Plane - a web and Telegram control plane for managing Cursor agent sessions, built on the official @cursor/sdk",
   "type": "module",
   "license": "MIT",
