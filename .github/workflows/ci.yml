@@ -112,8 +112,12 @@ jobs:
 
       - name: Start server and test health endpoint
         run: |
-          cp config.default.yaml config.yaml
-          printf '\ncursor:\n  api_key: test-key-for-ci\nserver:\n  port: 9999\n' >> config.yaml
+          printf '%s\n' \
+            'cursor:' \
+            '  api_key: test-key-for-ci' \
+            'server:' \
+            '  port: 9999' \
+            > config.yaml
           node dist/index.js &
           SERVER_PID=$!
 
