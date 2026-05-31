@@ -7,6 +7,11 @@ import { userConfigPath, projectConfigPath } from '../config/home.js';
 import { loadConfig } from '../config/loader.js';
 import { runSetup } from './setup.js';
 import { runDoctor } from './doctor.js';
+import {
+  parseHelpTopic,
+  printHelpForTopic,
+  getVersion,
+} from './help.js';
 
 const commands: Record<string, (args: string[]) => Promise<void>> = {
   async serve() {
@@ -60,48 +65,33 @@ const commands: Record<string, (args: string[]) => Promise<void>> = {
     await runDaemonCommand(command);
   },
 
-  async help() {
-    console.log(`
-Cursor Control Plane
+  async help(args: string[]) {
+    printHelpForTopic(args[0]);
+  },
 
-Usage: cursor-cp [command]
-
-Common commands:
-  setup          Configure cursor-cp (writes ~/cursor-cp/config.yaml)
-  serve          Start the server (default)
-  doctor         Check your installation for problems
-  config         Show the current configuration
-  help           Show this help message
-
-Advanced:
-  daemon enable|disable|start|stop|restart|status
-                 Run cursor-cp in the background (systemd / launchd)
-
-Examples:
-  cursor-cp setup        # first-run configuration
-  cursor-cp              # start the server
-  cursor-cp doctor       # diagnose issues
-`);
+  async version() {
+    console.log(getVersion());
   },
 };
 
 export async function runCLI(args: string[]): Promise<void> {
-  const command = args[0] || 'serve';
-
-  if (command === 'help' || command === '--help' || command === '-h') {
-    await commands.help([]);
+  const helpTopic = parseHelpTopic(args);
+  if (helpTopic !== null) {
+    printHelpForTopic(helpTopic);
     return;
   }
 
+  const command = args[0] || 'serve';
+
   if (command === 'version' || command === '--version' || command === '-v') {
-    console.log('0.1.0');
+    console.log(getVersion());
     return;
   }
 
   const handler = commands[command];
   if (!handler) {
     console.error(`Unknown command: ${command}`);
-    console.log('Run "cursor-cp help" for available commands.');
+    console.error('Run "cursor-cp help" for available commands.');
     process.exit(1);
   }
 

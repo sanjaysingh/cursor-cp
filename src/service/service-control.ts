@@ -1,6 +1,4 @@
-/**
- * Daemon control — manage background process (systemd/launchd)
- */
+import { printDaemonHelp } from '../cli/help.js';
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve } from 'path';
@@ -324,7 +322,7 @@ export async function runDaemonCommand(command: string): Promise<void> {
       controller.printStatus();
       break;
     default:
-      console.log('Usage: cursor-cp daemon [enable|disable|start|stop|restart|status]');
+      printDaemonHelp();
       process.exit(1);
   }
 }

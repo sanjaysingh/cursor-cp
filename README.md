@@ -11,6 +11,7 @@ A TypeScript control plane for creating and managing [Cursor](https://cursor.com
 - [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+- [Background service](#background-service)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
 - [Development](#development)
@@ -110,15 +111,93 @@ Your configuration in `~/cursor-cp/` is never touched.
 cursor-cp setup     # interactive wizard: API key, model, port, Telegram, daemon
 cursor-cp           # start the server in the foreground
 cursor-cp doctor    # check your installation for problems
+cursor-cp help      # list all commands and options
 ```
 
-`cursor-cp setup` can also enable a per-user background daemon (systemd `--user` on
-Linux, launchd on macOS) so the server starts on login. To manage the daemon
-directly, use the advanced `cursor-cp daemon enable|disable|start|stop|restart|status`
-commands.
+Foreground mode is fine for trying things out. For day-to-day use, run cursor-cp in the
+background and enable auto-start on login — see [Background service](#background-service).
 
 If `~/.local/bin` is not on your `PATH`, the installer prints the line to add to your
 shell profile.
+
+### Background service
+
+Run cursor-cp as a per-user background service so it keeps running after you close the
+terminal and starts automatically when you log in. Supported on **macOS** and **Linux**
+(installed via the one-line installer or `~/.local/bin/cursor-cp`).
+
+#### Enable auto-start (recommended)
+
+**Option A — during setup** (easiest). The install wizard asks:
+
+> Run cursor-cp in the background on login (enable daemon)?
+
+Answer **yes**. The daemon is installed, started, and configured to start on every login.
+
+**Option B — after install:**
+
+```bash
+cursor-cp daemon enable
+```
+
+This registers a user service, starts it immediately, and enables auto-start:
+
+| Platform | Mechanism | Unit file |
+|----------|-----------|-----------|
+| Linux | systemd user service | `~/.config/systemd/user/cursor-cp.service` |
+| macOS | LaunchAgent | `~/Library/LaunchAgents/com.cursor.cp.plist` |
+
+Verify it is running:
+
+```bash
+cursor-cp daemon status
+cursor-cp doctor          # includes a daemon check
+```
+
+Open the dashboard at `http://localhost:8747` (or whatever `server.port` is in your config).
+
+#### Manage the daemon
+
+```bash
+cursor-cp daemon status    # show type, running/stopped, install date
+cursor-cp daemon start     # start (if enabled but stopped)
+cursor-cp daemon stop      # stop without removing auto-start
+cursor-cp daemon restart     # restart after config changes
+cursor-cp daemon disable   # stop, remove unit, disable auto-start
+```
+
+After editing `~/cursor-cp/config.yaml`, apply changes with:
+
+```bash
+cursor-cp daemon restart
+```
+
+#### Logs
+
+| Platform | Where to look |
+|----------|---------------|
+| Linux | `journalctl --user -u cursor-cp.service -f` |
+| macOS | `~/cursor-cp/logs/service.log` and `service.error.log` |
+| Both | Daily app logs under `~/cursor-cp/logs/cursor-cp-YYYY-MM-DD.log` |
+
+#### Non-interactive setup
+
+Skip the prompt and enable the daemon in one step:
+
+```bash
+cursor-cp setup --enable-daemon
+```
+
+To run setup without enabling the daemon:
+
+```bash
+cursor-cp setup --no-daemon
+```
+
+#### Windows
+
+Background service installation is not supported on Windows. Run in the foreground with
+`cursor-cp` or `npm run dev` when developing from source.
 
 ### Runtime layout
 
