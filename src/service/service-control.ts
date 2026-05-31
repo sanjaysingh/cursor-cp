@@ -157,29 +157,75 @@ export class ServiceController {
     return resolve(homedir(), 'Library/LaunchAgents', `${label}.plist`);
   }
 
-  private bootoutLaunchd(label: string, plistPath: string): void {
+  private sleepSync(seconds: number): void {
     try {
-      execSync(`launchctl bootout ${launchdDomain()}/${label}`, { stdio: 'pipe' });
+      execSync(`sleep ${seconds}`, { stdio: 'ignore' });
     } catch {
+      // Best-effort delay.
+    }
+  }
+
+  private isLaunchdRegistered(label: string): boolean {
+    try {
+      execSync(`launchctl print ${launchdDomain()}/${label}`, { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Remove any existing registration for the label, trying every launchctl form. */
+  private bootoutLaunchd(label: string, plistPath: string): void {
+    const domain = launchdDomain();
+    const commands = [
+      `launchctl bootout ${domain}/${label}`,
+      `launchctl bootout ${domain} ${plistPath}`,
+      `launchctl unload ${plistPath}`,
+      `launchctl remove ${label}`,
+    ];
+    for (const command of commands) {
       try {
-        execSync(`launchctl bootout ${launchdDomain()} ${plistPath}`, { stdio: 'pipe' });
+        execSync(command, { stdio: 'pipe' });
       } catch {
-        try {
-          execSync(`launchctl unload ${plistPath}`, { stdio: 'pipe' });
-        } catch {
-          // Ignore unload errors
-        }
+        // Try the next form; the job may not be registered in this domain.
       }
+    }
+
+    // launchctl returns before the job is fully torn down; bootstrapping too
+    // soon yields "5: Input/output error". Wait for it to actually unregister.
+    for (let i = 0; i < 12 && this.isLaunchdRegistered(label); i++) {
+      this.sleepSync(0.5);
     }
   }
 
   private bootstrapLaunchd(label: string, plistPath: string): void {
-    this.bootoutLaunchd(label, plistPath);
-    try {
-      execSync(`launchctl bootstrap ${launchdDomain()} ${plistPath}`);
-    } catch {
-      execSync(`launchctl load ${plistPath}`);
+    const domain = launchdDomain();
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      this.bootoutLaunchd(label, plistPath);
+      this.sleepSync(0.5);
+
+      try {
+        execSync(`launchctl bootstrap ${domain} ${plistPath}`, { stdio: 'pipe' });
+        return;
+      } catch (err) {
+        lastError = err;
+      }
+
+      try {
+        execSync(`launchctl load -w ${plistPath}`, { stdio: 'pipe' });
+        return;
+      } catch (err) {
+        lastError = err;
+      }
+
+      this.sleepSync(1);
     }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('launchctl bootstrap failed');
   }
 
   private kickstartLaunchd(label: string): void {

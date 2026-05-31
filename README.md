@@ -93,7 +93,7 @@ Pass options through the pipe with `bash -s --`:
 ```bash
 # Install a specific tag/branch, or to a custom directory
 curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh \
-  | bash -s -- --version v0.2.4 --dir "$HOME/apps/cursor-cp"
+  | bash -s -- --version v0.2.5 --dir "$HOME/apps/cursor-cp"
 ```
 
 You can also download and run it directly (`bash install.sh [options]`).
@@ -376,7 +376,7 @@ All endpoints are served under the `/api` prefix.
 
 ```http
 GET /api/health
-# → { "status": "ok", "version": "0.2.4" }
+# → { "status": "ok", "version": "0.2.5" }
 
 GET /api/dashboard-config
 # → { "web_channel_key": "web:default", "workspace_root": "...", "default_model": "...", "max_sessions": 5 }
