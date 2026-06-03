@@ -41,6 +41,12 @@ const { mockAgent, sdkMock } = vi.hoisted(() => {
           this.isRetryable = isRetryable;
         }
       },
+      AgentBusyError: class AgentBusyError extends Error {
+        constructor(message: string) {
+          super(message);
+          this.name = 'AgentBusyError';
+        }
+      },
     },
   };
 });
@@ -144,6 +150,39 @@ describe('AgentService', () => {
     expect(result.success).toBe(true);
     expect(result.text).toBe('Hello world');
     expect(mockAgent.send).toHaveBeenCalledWith('Hi');
+  });
+
+  it('should retry send with local.force when agent has wedged active run', async () => {
+    mockAgent.send
+      .mockRejectedValueOnce(new Error('Agent already has active run'))
+      .mockResolvedValueOnce({
+        id: 'run-2',
+        agentId: 'agent-test-id',
+        async *stream() {
+          yield {
+            type: 'assistant',
+            agent_id: 'agent-test-id',
+            run_id: 'run-2',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Recovered' }],
+            },
+          };
+        },
+        wait: vi.fn().mockResolvedValue({
+          id: 'run-2',
+          status: 'finished',
+          result: 'Recovered',
+        }),
+      });
+
+    await service.createSession('test-id', '/tmp/workspace');
+    const result = await service.sendPrompt('test-id', 'Hi again');
+
+    expect(result.success).toBe(true);
+    expect(mockAgent.send).toHaveBeenCalledTimes(2);
+    expect(mockAgent.send).toHaveBeenNthCalledWith(1, 'Hi again');
+    expect(mockAgent.send).toHaveBeenNthCalledWith(2, 'Hi again', { local: { force: true } });
   });
 
   it('should register question callback', async () => {

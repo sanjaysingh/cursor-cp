@@ -12,6 +12,12 @@ import { splitPlainText, markdownToTelegram, markdownToTelegramHtml } from '../f
 import { createHash } from 'crypto';
 import { logger } from '../util/logger.js';
 import { getVersion } from '../cli/help.js';
+import {
+  TELEGRAM_HANDLER_TIMEOUT_MS,
+  wrapTelegramHandler,
+  formatTelegramError,
+  replySafe,
+} from './telegram-resilience.js';
 
 interface PendingQuestion {
   resolve: (answer: string) => void;
@@ -45,7 +51,7 @@ export class TelegramChannel implements Channel {
     allowedUserIds: Set<number>,
     config: AppConfig
   ) {
-    this.bot = new Telegraf(token);
+    this.bot = new Telegraf(token, { handlerTimeout: TELEGRAM_HANDLER_TIMEOUT_MS });
     this.sessionManager = sessionManager;
     this.allowedUserIds = allowedUserIds;
     this.config = config;
@@ -391,54 +397,78 @@ export class TelegramChannel implements Channel {
       await ctx.reply(`✅ Created session for ${name}. Send me text to start!`);
     });
 
-    // Handle text messages
-    this.bot.on('text', async (ctx) => {
-      const chatId = String(ctx.chat?.id);
-      const text = ctx.message.text;
+    // Ack quickly; run agent work in background so Telegraf handlerTimeout is not hit.
+    this.bot.on(
+      'text',
+      wrapTelegramHandler('text', async (ctx) => {
+        const chatId = String(ctx.chat?.id);
+        const text = ctx.message.text;
 
-      // Ignore commands
-      if (text.startsWith('/')) return;
+        if (text.startsWith('/')) return;
 
-      logger.info({ chatId, textLength: text.length }, 'Telegram text message received');
+        logger.info({ chatId, textLength: text.length }, 'Telegram text message received');
 
-      try {
-        // Check if we have an active session
-        let sessionId = this.activeSessions.get(chatId);
-
-        if (!sessionId) {
-          // Try to find an existing open session
-          const sessions = this.sessionManager.listAllSessions(false);
-          const existing = sessions.find((s) => s.channel === 'telegram' && s.channelKey === chatId);
-
-          if (existing) {
-            sessionId = existing.id;
-            this.activeSessions.set(chatId, sessionId);
-            logger.info({ chatId, sessionId }, 'Reconnected to existing Telegram session');
-          } else {
-            // Create new session without a specific repo
-            const session = await this.sessionManager.createSession('telegram', chatId, '', 'Telegram Session');
-            sessionId = session.id;
-            this.activeSessions.set(chatId, sessionId);
-            logger.info({ chatId, sessionId }, 'Created new Telegram session');
-            await ctx.reply('✅ Created new session. Processing your message…');
-          }
-        }
-
+        const sessionId = await this.resolveOrCreateSession(chatId, ctx);
         await ctx.sendChatAction('typing');
-        await this.sessionManager.sendSessionMessage(sessionId, text, 'telegram', chatId);
-        logger.info({ chatId, sessionId }, 'Telegram message dispatched to agent');
-      } catch (err) {
-        logger.error({ err, chatId }, 'Failed to handle Telegram text message');
-        await ctx.reply(
-          `❌ Error: ${err instanceof Error ? err.message : String(err)}`
-        ).catch((replyErr) => {
-          logger.error({ err: replyErr, chatId }, 'Failed to send Telegram error reply');
-        });
+        await ctx.reply('⏳ Processing…');
+        void this.processSessionMessage(sessionId, text, chatId);
+      })
+    );
+  }
+
+  private async resolveOrCreateSession(
+    chatId: string,
+    ctx: Context<Update>
+  ): Promise<string> {
+    let sessionId = this.activeSessions.get(chatId);
+
+    if (!sessionId) {
+      const sessions = this.sessionManager.listAllSessions(false);
+      const existing = sessions.find((s) => s.channel === 'telegram' && s.channelKey === chatId);
+
+      if (existing) {
+        sessionId = existing.id;
+        this.activeSessions.set(chatId, sessionId);
+        logger.info({ chatId, sessionId }, 'Reconnected to existing Telegram session');
+      } else {
+        const session = await this.sessionManager.createSession(
+          'telegram',
+          chatId,
+          '',
+          'Telegram Session'
+        );
+        sessionId = session.id;
+        this.activeSessions.set(chatId, sessionId);
+        logger.info({ chatId, sessionId }, 'Created new Telegram session');
+        await ctx.reply('✅ Created new session. Processing your message…');
       }
-    });
+    }
+
+    return sessionId;
+  }
+
+  private async processSessionMessage(
+    sessionId: string,
+    text: string,
+    chatId: string
+  ): Promise<void> {
+    try {
+      await this.sessionManager.sendSessionMessage(sessionId, text, 'telegram', chatId);
+      logger.info({ chatId, sessionId }, 'Telegram message dispatched to agent');
+    } catch (err) {
+      logger.error({ err, chatId, sessionId }, 'Telegram session message failed');
+      await this.sendMessage(chatId, `❌ ${formatTelegramError(err)}`);
+    }
   }
 
   async start(): Promise<void> {
+    this.bot.catch((err, ctx) => {
+      logger.error({ err, updateType: ctx?.updateType }, 'Telegraf polling error');
+      if (ctx) {
+        void replySafe(ctx, `❌ ${formatTelegramError(err)}`);
+      }
+    });
+
     await this.bot.launch();
     await this.syncBotCommands();
     logger.info('Telegram bot polling started');

@@ -5,12 +5,14 @@
 
 import {
   Agent,
+  AgentBusyError,
   Cursor,
   CursorAgentError,
   type Run,
   type SDKAgent,
 } from '@cursor/sdk';
 import type { AgentActivity } from '../models/types.js';
+import { isWedgedActiveRunError } from '../util/agent-errors.js';
 import { logger } from '../util/logger.js';
 
 export interface AgentRunResult {
@@ -143,7 +145,7 @@ export class AgentService {
         const currentPrompt = followUpPrompt;
         followUpPrompt = undefined;
 
-        const run = await session.agent.send(currentPrompt);
+        const run = await this.sendPromptToAgent(session, currentPrompt);
         logger.info(
           { sessionId, agentId: session.sdkAgentId, runId: run.id },
           'Agent run started'
@@ -193,6 +195,15 @@ export class AgentService {
       session.activity = 'error';
       logger.error({ err, sessionId }, 'Agent sendPrompt failed');
 
+      if (err instanceof AgentBusyError || isWedgedActiveRunError(err)) {
+        return {
+          success: false,
+          error:
+            'Agent is busy with a previous run. Close the session and start a new one, or wait for the current run to finish.',
+          text: session.outputBuffer,
+        };
+      }
+
       if (err instanceof CursorAgentError) {
         return {
           success: false,
@@ -206,6 +217,25 @@ export class AgentService {
         error: err instanceof Error ? err.message : String(err),
         text: session.outputBuffer,
       };
+    }
+  }
+
+  /**
+   * Send a prompt, retrying once with local.force when the SDK store has a wedged run
+   * (common after SIGTERM/restart mid-agent-run).
+   */
+  private async sendPromptToAgent(session: AgentSession, prompt: string): Promise<Run> {
+    try {
+      return await session.agent.send(prompt);
+    } catch (err) {
+      if (!isWedgedActiveRunError(err)) {
+        throw err;
+      }
+      logger.warn(
+        { agentId: session.sdkAgentId, sessionId: session.id },
+        'Agent has wedged active run; retrying with local.force'
+      );
+      return await session.agent.send(prompt, { local: { force: true } });
     }
   }
 
