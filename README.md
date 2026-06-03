@@ -312,7 +312,7 @@ flowchart TB
     API --> SM
     SM --> AS
     SM --> Repos
-    AS -->|@cursor/sdk| Cursor
+    AS -->|"@cursor/sdk"| Cursor
     Repos --> SQLite
     EB -.->|events| WS
     SM --> CH
