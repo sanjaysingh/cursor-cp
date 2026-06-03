@@ -30,7 +30,18 @@ import { ensureProjectDirs, projectHomeDir } from './paths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+function registerProcessErrorHandlers(): void {
+  process.on('unhandledRejection', (reason) => {
+    logger.error({ reason }, 'Unhandled promise rejection (process continues)');
+  });
+
+  process.on('uncaughtException', (err) => {
+    logger.error({ err }, 'Uncaught exception');
+  });
+}
+
 async function main() {
+  registerProcessErrorHandlers();
   const { config } = loadConfig();
   initLogging(config.logging);
   requireCursorApiKey(config);
@@ -159,7 +170,9 @@ async function main() {
     process.exit(1);
   }
 
-  await channelRegistry.startAll();
+  void channelRegistry.startAll().catch((err) => {
+    logger.error({ err }, 'Channel startup failed');
+  });
 }
 
 main().catch((err) => {

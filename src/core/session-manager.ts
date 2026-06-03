@@ -48,6 +48,8 @@ export class SessionManager {
   private maxSessions: number;
   private defaultModel: string;
   private managedSessions: Map<string, ManagedSession> = new Map();
+  /** Serializes agent sends per session to avoid concurrent SDK runs. */
+  private sessionLocks = new Map<string, Promise<void>>();
 
   constructor(options: SessionManagerOptions) {
     this.sessions = options.repositories.sessions;
@@ -359,95 +361,117 @@ export class SessionManager {
     participantChannel?: string,
     participantConversationId?: string
   ): Promise<Session> {
-    let session = this.managedSessions.get(sessionId) ?? this.sessions.findById(sessionId);
-    if (!session) {
-      throw new Error(`Session not found: ${sessionId}`);
-    }
+    return this.withSessionLock(sessionId, async () => {
+      let session = this.managedSessions.get(sessionId) ?? this.sessions.findById(sessionId);
+      if (!session) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
 
-    // Ensure participant
-    if (participantChannel && participantConversationId) {
-      this.participants.ensure({
-        sessionId,
-        channel: participantChannel,
-        conversationId: participantConversationId,
-        joinedAt: new Date().toISOString(),
-      });
-    }
+      // Ensure participant
+      if (participantChannel && participantConversationId) {
+        this.participants.ensure({
+          sessionId,
+          channel: participantChannel,
+          conversationId: participantConversationId,
+          joinedAt: new Date().toISOString(),
+        });
+      }
 
-    // Reopen if closed
-    if (session.status === 'closed') {
-      session.status = 'open';
-      session.closedAt = null;
-      session.errorMessage = null;
-      this.sessions.updateStatus(sessionId, 'open');
-    }
-
-    session = await this.ensureAgentReady(session);
-
-    // Store user message
-    this.messages.insert(sessionId, 'user', text);
-    this.sessions.touch(sessionId);
-
-    logger.info(
-      { sessionId, channel: participantChannel, textLength: text.length },
-      'Sending user message to agent'
-    );
-
-    // Send to agent
-    session.activity = 'running';
-    session.outputPreview = '';
-
-    await this.eventBus.emit({
-      type: 'session_updated',
-      session: this.toPublicSession(session),
-    });
-
-    try {
-      const result = await this.agentService.sendPrompt(sessionId, text);
-
-      if (result.success) {
-        const streamed = session.outputPreview.trim();
-        const resultText = result.text.trim();
-        const summary = streamed || resultText;
-
-        if (summary) {
-          this.messages.insert(sessionId, 'assistant', summary.slice(0, 20000));
-        }
+      // Reopen if closed
+      if (session.status === 'closed') {
+        session.status = 'open';
+        session.closedAt = null;
         session.errorMessage = null;
+        this.sessions.updateStatus(sessionId, 'open');
+      }
 
-        // Non-web channels do not receive agent_stream — deliver the full reply here.
-        if (summary) {
-          await this.deliverToParticipants(sessionId, summary);
+      session = await this.ensureAgentReady(session);
+
+      // Store user message
+      this.messages.insert(sessionId, 'user', text);
+      this.sessions.touch(sessionId);
+
+      logger.info(
+        { sessionId, channel: participantChannel, textLength: text.length },
+        'Sending user message to agent'
+      );
+
+      // Send to agent
+      session.activity = 'running';
+      session.outputPreview = '';
+
+      await this.eventBus.emit({
+        type: 'session_updated',
+        session: this.toPublicSession(session),
+      });
+
+      try {
+        const result = await this.agentService.sendPrompt(sessionId, text);
+
+        if (result.success) {
+          const streamed = session.outputPreview.trim();
+          const resultText = result.text.trim();
+          const summary = streamed || resultText;
+
+          if (summary) {
+            this.messages.insert(sessionId, 'assistant', summary.slice(0, 20000));
+          }
+          session.errorMessage = null;
+
+          // Non-web channels do not receive agent_stream — deliver the full reply here.
+          if (summary) {
+            await this.deliverToParticipants(sessionId, summary);
+          }
+        } else {
+          session.errorMessage = result.error ?? null;
+          session.activity = 'error';
+          logger.warn({ sessionId, error: result.error }, 'Agent returned error');
+          if (result.error) {
+            await this.deliverToParticipants(sessionId, `Agent error: ${result.error}`);
+          }
         }
-      } else {
-        session.errorMessage = result.error ?? null;
+      } catch (err) {
+        session.errorMessage = err instanceof Error ? err.message : String(err);
         session.activity = 'error';
-        logger.warn({ sessionId, error: result.error }, 'Agent returned error');
-        if (result.error) {
-          await this.deliverToParticipants(sessionId, `Agent error: ${result.error}`);
+        logger.error({ err, sessionId }, 'sendSessionMessage failed');
+        await this.deliverToParticipants(
+          sessionId,
+          `Agent error: ${session.errorMessage}`
+        );
+      } finally {
+        if (session.activity === 'running') {
+          session.activity = 'idle';
         }
       }
-    } catch (err) {
-      session.errorMessage = err instanceof Error ? err.message : String(err);
-      session.activity = 'error';
-      logger.error({ err, sessionId }, 'sendSessionMessage failed');
-      await this.deliverToParticipants(
-        sessionId,
-        `Agent error: ${session.errorMessage}`
-      );
+
+      this.sessions.touch(sessionId);
+      await this.eventBus.emit({
+        type: 'session_updated',
+        session: this.toPublicSession(session),
+      });
+
+      return session;
+    });
+  }
+
+  private async withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const current = previous.then(() => gate);
+    this.sessionLocks.set(sessionId, current);
+
+    await previous;
+    try {
+      return await fn();
     } finally {
-      if (session.activity === 'running') {
-        session.activity = 'idle';
+      release();
+      if (this.sessionLocks.get(sessionId) === current) {
+        this.sessionLocks.delete(sessionId);
       }
     }
-
-    this.sessions.touch(sessionId);
-    await this.eventBus.emit({
-      type: 'session_updated',
-      session: this.toPublicSession(session),
-    });
-
-    return session;
   }
 
   async submitIncoming(message: IncomingMessage): Promise<Session | null> {
