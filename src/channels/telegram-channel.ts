@@ -402,7 +402,11 @@ export class TelegramChannel implements Channel {
       'text',
       wrapTelegramHandler('text', async (ctx) => {
         const chatId = String(ctx.chat?.id);
-        const text = ctx.message.text;
+        const message = ctx.message;
+        if (!message || !('text' in message) || typeof message.text !== 'string') {
+          return;
+        }
+        const text = message.text;
 
         if (text.startsWith('/')) return;
 
