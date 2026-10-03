@@ -152,6 +152,106 @@ describe('AgentService', () => {
     expect(mockAgent.send).toHaveBeenCalledWith('Hi');
   });
 
+  it('should surface the SDK error when a run fails', async () => {
+    mockAgent.send.mockResolvedValue({
+      id: 'run-err',
+      agentId: 'agent-test-id',
+      store: {
+        getRun: vi.fn().mockResolvedValue({ errorCode: 'Model blocked' }),
+      },
+      async *stream() {
+        /* no output */
+      },
+      wait: vi.fn().mockResolvedValue({ id: 'run-err', status: 'error' }),
+    });
+
+    await service.createSession('test-id', '/tmp/workspace');
+    const result = await service.sendPrompt('test-id', 'Hi');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Model blocked');
+    expect(sdkMock.Agent.resume).not.toHaveBeenCalled();
+  });
+
+  it('should restart the executor and retry once after an authentication error', async () => {
+    mockAgent.send
+      .mockResolvedValueOnce({
+        id: 'run-auth',
+        agentId: 'agent-test-id',
+        store: {
+          getRun: vi.fn().mockResolvedValue({
+            errorCode: 'Authentication error If you are logged in, try logging out and back in.',
+          }),
+        },
+        async *stream() {
+          /* auth fails before any text */
+        },
+        wait: vi.fn().mockResolvedValue({ id: 'run-auth', status: 'error' }),
+      })
+      .mockResolvedValueOnce({
+        id: 'run-ok',
+        agentId: 'agent-test-id',
+        async *stream() {
+          yield {
+            type: 'assistant',
+            agent_id: 'agent-test-id',
+            run_id: 'run-ok',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Recovered' }],
+            },
+          };
+        },
+        wait: vi.fn().mockResolvedValue({
+          id: 'run-ok',
+          status: 'finished',
+          result: 'Recovered',
+        }),
+      });
+
+    await service.createSession('test-id', '/tmp/workspace');
+    const result = await service.sendPrompt('test-id', 'Hi again');
+
+    expect(result.success).toBe(true);
+    expect(result.text).toBe('Recovered');
+    expect(mockAgent[Symbol.asyncDispose]).toHaveBeenCalled();
+    expect(sdkMock.Agent.resume).toHaveBeenCalledWith('agent-test-id', {
+      apiKey: 'test-key',
+      model: { id: 'composer-2' },
+      local: {
+        cwd: '/tmp/workspace',
+        settingSources: [],
+      },
+    });
+    expect(mockAgent.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('should report the authentication error when the retry also fails', async () => {
+    const failedRun = {
+      id: 'run-auth',
+      agentId: 'agent-test-id',
+      store: {
+        getRun: vi.fn().mockResolvedValue({
+          errorCode: 'Authentication error If you are logged in, try logging out and back in.',
+        }),
+      },
+      async *stream() {
+        /* still unauthenticated */
+      },
+      wait: vi.fn().mockResolvedValue({ id: 'run-auth', status: 'error' }),
+    };
+    mockAgent.send.mockResolvedValue(failedRun);
+
+    await service.createSession('test-id', '/tmp/workspace');
+    const result = await service.sendPrompt('test-id', 'Hi');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(
+      'Authentication error. If you are logged in, try logging out and back in.'
+    );
+    expect(mockAgent.send).toHaveBeenCalledTimes(2);
+  });
+
   it('should retry send with local.force when agent has wedged active run', async () => {
     mockAgent.send
       .mockRejectedValueOnce(new Error('Agent already has active run'))
