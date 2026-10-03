@@ -12,7 +12,12 @@ import {
   type SDKAgent,
 } from '@cursor/sdk';
 import type { AgentActivity } from '../models/types.js';
-import { isWedgedActiveRunError } from '../util/agent-errors.js';
+import {
+  errorMessage,
+  formatRunFailure,
+  isAuthRequiredError,
+  isWedgedActiveRunError,
+} from '../util/agent-errors.js';
 import { logger } from '../util/logger.js';
 
 export interface AgentRunResult {
@@ -30,6 +35,13 @@ export interface AgentSession {
   activity: AgentActivity;
   outputBuffer: string;
   createdAt: Date;
+}
+
+interface RunErrorStore {
+  getRun(
+    agentId: string,
+    runId: string
+  ): Promise<{ errorCode?: string | null } | null | undefined>;
 }
 
 interface StreamChunk {
@@ -138,13 +150,14 @@ export class AgentService {
     session.activity = 'running';
     session.outputBuffer = '';
 
-    try {
-      let followUpPrompt: string | undefined = prompt;
+    let authRetried = false;
+    let followUpPrompt: string | undefined = prompt;
 
-      while (followUpPrompt) {
-        const currentPrompt = followUpPrompt;
-        followUpPrompt = undefined;
+    while (followUpPrompt) {
+      const currentPrompt: string = followUpPrompt;
+      followUpPrompt = undefined;
 
+      try {
         const run = await this.sendPromptToAgent(session, currentPrompt);
         logger.info(
           { sessionId, agentId: session.sdkAgentId, runId: run.id },
@@ -160,11 +173,22 @@ export class AgentService {
         }
 
         if (result.status === 'error') {
+          const detail = await this.readRunErrorDetail(run);
+          const failure = formatRunFailure(result.id, detail);
+          logger.error({ sessionId, runId: result.id, error: failure }, 'Agent run failed');
+
+          if (!authRetried && isAuthRequiredError(failure)) {
+            authRetried = true;
+            await this.recreateAgentAfterAuthFailure(session);
+            session.outputBuffer = '';
+            followUpPrompt = currentPrompt;
+            continue;
+          }
+
           session.activity = 'error';
-          logger.error({ sessionId, runId: result.id }, 'Agent run failed');
           return {
             success: false,
-            error: `Agent run failed: ${result.id}`,
+            error: failure,
             text: this.finalText(session, result.result),
           };
         }
@@ -187,36 +211,101 @@ export class AgentService {
           success: true,
           text: this.finalText(session, result.result),
         };
-      }
+      } catch (err) {
+        if (!authRetried && isAuthRequiredError(err)) {
+          authRetried = true;
+          try {
+            await this.recreateAgentAfterAuthFailure(session);
+          } catch (recoverErr) {
+            logger.error({ err: recoverErr, sessionId }, 'Auth recovery failed');
+            session.activity = 'error';
+            return {
+              success: false,
+              error: errorMessage(err),
+              text: session.outputBuffer,
+            };
+          }
+          session.outputBuffer = '';
+          followUpPrompt = currentPrompt;
+          continue;
+        }
 
-      session.activity = 'idle';
-      return { success: true, text: session.outputBuffer };
+        session.activity = 'error';
+        logger.error({ err, sessionId }, 'Agent sendPrompt failed');
+
+        if (err instanceof AgentBusyError || isWedgedActiveRunError(err)) {
+          return {
+            success: false,
+            error:
+              'Agent is busy with a previous run. Close the session and start a new one, or wait for the current run to finish.',
+            text: session.outputBuffer,
+          };
+        }
+
+        if (err instanceof CursorAgentError) {
+          return {
+            success: false,
+            error: `Startup failed: ${err.message} (retryable: ${err.isRetryable})`,
+            text: session.outputBuffer,
+          };
+        }
+
+        return {
+          success: false,
+          error: errorMessage(err),
+          text: session.outputBuffer,
+        };
+      }
+    }
+
+    session.activity = 'idle';
+    return { success: true, text: session.outputBuffer };
+  }
+
+  /**
+   * The local executor is cached for the life of the process and keeps the
+   * login it minted at startup. When that login expires, runs fail immediately
+   * with an authentication error until the executor is disposed and created again.
+   */
+  private async recreateAgentAfterAuthFailure(session: AgentSession): Promise<void> {
+    logger.warn(
+      { sessionId: session.id, agentId: session.sdkAgentId },
+      'Authentication failed; restarting agent executor and retrying'
+    );
+
+    try {
+      await session.agent[Symbol.asyncDispose]();
     } catch (err) {
-      session.activity = 'error';
-      logger.error({ err, sessionId }, 'Agent sendPrompt failed');
+      logger.warn({ err, sessionId: session.id }, 'Error disposing agent during auth recovery');
+    }
 
-      if (err instanceof AgentBusyError || isWedgedActiveRunError(err)) {
-        return {
-          success: false,
-          error:
-            'Agent is busy with a previous run. Close the session and start a new one, or wait for the current run to finish.',
-          text: session.outputBuffer,
-        };
-      }
+    const agent = await Agent.resume(session.sdkAgentId, {
+      apiKey: this.apiKey,
+      model: { id: session.model },
+      local: {
+        cwd: session.workspacePath,
+        settingSources: [],
+      },
+    });
 
-      if (err instanceof CursorAgentError) {
-        return {
-          success: false,
-          error: `Startup failed: ${err.message} (retryable: ${err.isRetryable})`,
-          text: session.outputBuffer,
-        };
-      }
+    session.agent = agent;
+    session.sdkAgentId = agent.agentId;
+  }
 
-      return {
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-        text: session.outputBuffer,
-      };
+  /** `Run.wait()` drops the SDK error text; it is stored on the run record. */
+  private async readRunErrorDetail(run: Run): Promise<string | undefined> {
+    const store = (run as Run & { store?: RunErrorStore }).store;
+    if (!store || typeof store.getRun !== 'function') {
+      return undefined;
+    }
+
+    try {
+      const record = await store.getRun(run.agentId, run.id);
+      const detail = record?.errorCode?.trim();
+      return detail || undefined;
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, 'Failed to read agent run error');
+      return undefined;
     }
   }
 
