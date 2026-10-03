@@ -43,7 +43,7 @@ resumed automatically.
 
 | Requirement | Minimum | Recommended | Notes |
 |-------------|---------|-------------|-------|
-| Node.js | 20.x | 22.x | |
+| Node.js | 20.x | 22.x | 24.x and 26.x work as well |
 | npm | 9.x | latest | Ships with Node.js |
 | Cursor API key | — | — | [Get one here](https://cursor.com/dashboard/cloud-agents) |
 | Git | any | latest | Required to clone/update |
