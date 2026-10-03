@@ -12,6 +12,14 @@ import {
   type RunResult,
   type SDKAgent,
 } from '@cursor/sdk';
+import type { AgentActivity } from '../models/types.js';
+import {
+  errorMessage,
+  formatRunFailure,
+  isAuthRequiredError,
+  isWedgedActiveRunError,
+} from '../util/agent-errors.js';
+import { logger } from '../util/logger.js';
 
 /**
  * Fields the current docs add on top of the installed SDK types.
@@ -34,9 +42,6 @@ function liveRun(run: Run): LiveRun {
 function liveResult(result: RunResult): LiveRunResult {
   return result as LiveRunResult;
 }
-import type { AgentActivity } from '../models/types.js';
-import { isWedgedActiveRunError } from '../util/agent-errors.js';
-import { logger } from '../util/logger.js';
 
 export interface AgentRunResult {
   success: boolean;
@@ -76,6 +81,13 @@ export interface AgentSession {
   activity: AgentActivity;
   outputBuffer: string;
   createdAt: Date;
+}
+
+interface RunErrorStore {
+  getRun(
+    agentId: string,
+    runId: string
+  ): Promise<{ errorCode?: string | null } | null | undefined>;
 }
 
 interface StreamChunk {
@@ -257,13 +269,45 @@ export class AgentService {
     session.outputBuffer = '';
     this.inFlight.add(sessionId);
 
+    let authRetried = false;
+
     try {
       let nextPrompt: string | undefined = prompt;
       let followUps = 0;
       let last: AgentRunResult = { success: true, status: 'finished', text: '' };
 
       while (nextPrompt) {
-        last = await this.executeRun(session, nextPrompt);
+        const currentPrompt: string = nextPrompt;
+        try {
+          last = await this.executeRun(session, currentPrompt);
+        } catch (err) {
+          if (!authRetried && isAuthRequiredError(err)) {
+            authRetried = true;
+            const recovered = await this.recoverAuth(session, err);
+            if (!recovered) {
+              return this.withUnsentInput(sessionId, {
+                success: false,
+                status: 'error',
+                error: errorMessage(err),
+                text: session.outputBuffer,
+              });
+            }
+            nextPrompt = currentPrompt;
+            continue;
+          }
+          throw err;
+        }
+
+        if (!last.success && !authRetried && last.error && isAuthRequiredError(last.error)) {
+          authRetried = true;
+          const recovered = await this.recoverAuth(session, last.error);
+          if (!recovered) {
+            return this.withUnsentInput(sessionId, last);
+          }
+          nextPrompt = currentPrompt;
+          continue;
+        }
+
         if (!last.success) {
           return this.withUnsentInput(sessionId, last);
         }
@@ -291,6 +335,19 @@ export class AgentService {
     } finally {
       this.inFlight.delete(sessionId);
       this.activeRuns.delete(sessionId);
+    }
+  }
+
+  /** Restart the local executor once after a stale login. Returns false if that restart fails. */
+  private async recoverAuth(session: AgentSession, err: unknown): Promise<boolean> {
+    try {
+      await this.recreateAgentAfterAuthFailure(session);
+      session.outputBuffer = '';
+      return true;
+    } catch (recoverErr) {
+      logger.error({ err: recoverErr, sessionId: session.id, cause: errorMessage(err) }, 'Auth recovery failed');
+      session.activity = 'error';
+      return false;
     }
   }
 
@@ -349,8 +406,9 @@ export class AgentService {
 
     if (result.status === 'error') {
       session.activity = 'error';
-      const message = settled.error?.message || `Agent run failed (${result.id})`;
-      logger.error({ sessionId, runId: result.id, requestId: settled.requestId, message }, 'Agent run failed');
+      const detail = (await this.readRunErrorDetail(run)) || settled.error?.message;
+      const message = formatRunFailure(result.id, detail);
+      logger.error({ sessionId, runId: result.id, requestId: settled.requestId, error: message }, 'Agent run failed');
       return { success: false, status: 'error', error: message, text };
     }
 
@@ -392,9 +450,60 @@ export class AgentService {
     return {
       success: false,
       status: 'error',
-      error: err instanceof Error ? err.message : String(err),
+      error: errorMessage(err),
       text: session.outputBuffer,
     };
+  }
+
+  /**
+   * The local executor is cached for the life of the process and keeps the
+   * login it minted at startup. When that login expires, runs fail immediately
+   * with an authentication error until the executor is disposed and created again.
+   */
+  private async recreateAgentAfterAuthFailure(session: AgentSession): Promise<void> {
+    logger.warn(
+      { sessionId: session.id, agentId: session.sdkAgentId },
+      'Authentication failed; restarting agent executor and retrying'
+    );
+
+    try {
+      await session.agent[Symbol.asyncDispose]();
+    } catch (err) {
+      logger.warn({ err, sessionId: session.id }, 'Error disposing agent during auth recovery');
+    }
+
+    const agent = await withTimeout(
+      Agent.resume(session.sdkAgentId, {
+        apiKey: this.apiKey,
+        model: { id: session.model },
+        local: {
+          cwd: session.workspacePath,
+          settingSources: [],
+        },
+      }),
+      this.timeouts.sdkCallMs,
+      'Agent.resume'
+    );
+
+    session.agent = agent;
+    session.sdkAgentId = agent.agentId;
+  }
+
+  /** `Run.wait()` drops the SDK error text; it is stored on the run record. */
+  private async readRunErrorDetail(run: Run): Promise<string | undefined> {
+    const store = (run as Run & { store?: RunErrorStore }).store;
+    if (!store || typeof store.getRun !== 'function') {
+      return undefined;
+    }
+
+    try {
+      const record = await store.getRun(run.agentId, run.id);
+      const detail = record?.errorCode?.trim();
+      return detail || undefined;
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, 'Failed to read agent run error');
+      return undefined;
+    }
   }
 
   private withUnsentInput(sessionId: string, result: AgentRunResult): AgentRunResult {
