@@ -49,11 +49,13 @@ import {
   ParticipantRepository,
   SettingsRepository,
 } from '../db/repositories.js';
-import type { ChannelRegistry } from '../channels/base.js';
+import type { Channel, ChannelRegistry } from '../channels/base.js';
+
+const getChannel = vi.fn<(name: string) => Channel | undefined>(() => undefined);
 
 const mockRegistry: ChannelRegistry = {
   register: () => {},
-  get: () => undefined,
+  get: (name) => getChannel(name),
   list: () => [],
   startAll: async () => {},
   stopAll: async () => {},
@@ -68,6 +70,7 @@ describe('SessionManager', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    getChannel.mockReturnValue(undefined);
     sdkMock.Agent.create.mockResolvedValue(mockAgent);
 
     dbPath = resolve(tmpdir(), `test-sm-${Date.now()}.db`);
@@ -255,6 +258,41 @@ describe('SessionManager', () => {
       const result = await restartedManager.sendSessionMessage(session.id, 'Continue', 'web', 'web:1');
       expect(result.activity).not.toBe('error');
       expect(mockAgent.send).toHaveBeenCalledWith('Continue');
+    });
+  });
+
+  describe('telegram delivery', () => {
+    it('should tell the user when a finished run has no text', async () => {
+      const sent: string[] = [];
+      getChannel.mockImplementation((name: string) => {
+        if (name !== 'telegram') return undefined;
+        return {
+          name: 'telegram',
+          start: async () => {},
+          stop: async () => {},
+          sendMessage: async (_conversationId: string, text: string) => {
+            sent.push(text);
+          },
+          askQuestion: async () => '',
+        };
+      });
+
+      mockAgent.send.mockResolvedValue({
+        id: 'run-empty',
+        async *stream() {
+          yield* [];
+        },
+        wait: vi.fn().mockResolvedValue({
+          id: 'run-empty',
+          status: 'finished',
+          result: '   ',
+        }),
+      });
+
+      const session = await sessionManager.createSession('telegram', 'tg-1', '/tmp/r1', 'S1');
+      await sessionManager.sendSessionMessage(session.id, 'Hi', 'telegram', 'tg-1');
+
+      expect(sent).toEqual(['The agent finished without a text reply.']);
     });
   });
 

@@ -7,7 +7,7 @@ import { randomUUID } from 'crypto';
 import { basename } from 'path';
 import type { Session, IncomingMessage } from '../models/types.js';
 import type { SessionRepository, MessageRepository, ParticipantRepository, SettingsRepository } from '../db/repositories.js';
-import { AgentService } from './agent-service.js';
+import { AgentService, type AgentRunResult } from './agent-service.js';
 import { EventBus } from './events.js';
 import type { Channel, ChannelRegistry } from '../channels/base.js';
 import { logger } from '../util/logger.js';
@@ -62,102 +62,132 @@ export class SessionManager {
     this.maxSessions = options.maxSessions;
     this.defaultModel = options.defaultModel;
 
-    // Only stream assistant text to clients — skip tool/thinking/status noise
     this.agentService.onStream((sessionId, chunk) => {
       if (chunk.type === 'text') {
-        this.handleStreamChunk(sessionId, chunk.text);
+        void this.handleStreamChunk(sessionId, chunk.text);
       }
+      void this.publishProgress(sessionId, chunk);
     });
 
-    // Set up question handler - CRITICAL FIX: Pass full question context
-    this.agentService.onQuestion(async (sessionId, question) => {
-      return this.handleAgentQuestion(sessionId, question);
+    // Fire-and-forget. Awaiting this inside the SDK stream stalls the run.
+    this.agentService.onQuestion((sessionId, question) => {
+      this.handleAgentQuestion(sessionId, question);
     });
   }
 
+  hasActiveRun(sessionId: string): boolean {
+    return this.agentService.hasActiveRun(sessionId);
+  }
+
   /**
-   * Handle agent questions with full context - THIS IS THE BUG FIX
-   * Ensures users see the full question text, not just an "OK" button
+   * While a run is streaming, Cursor accepts more input via run.steer().
+   * Returns true when the live turn took the text. Otherwise the caller
+   * should send it as its own prompt after the current one finishes.
    */
-  private async handleAgentQuestion(
+  async offerToActiveRun(
+    sessionId: string,
+    text: string,
+    participantChannel?: string,
+    participantConversationId?: string
+  ): Promise<boolean> {
+    if (!this.agentService.hasActiveRun(sessionId)) return false;
+
+    const steered = await this.agentService.steerActiveRun(sessionId, text);
+    if (!steered) return false;
+
+    if (participantChannel && participantConversationId) {
+      this.participants.ensure({
+        sessionId,
+        channel: participantChannel,
+        conversationId: participantConversationId,
+        joinedAt: new Date().toISOString(),
+      });
+    }
+    this.messages.insert(sessionId, 'user', text);
+    this.sessions.touch(sessionId);
+    return true;
+  }
+
+  /**
+   * Surface an SDK `request` event. The first real answer wins and is steered
+   * into the live run. Empty timeout results are ignored so we don't inject
+   * a fake "Continue" and start another turn.
+   */
+  private handleAgentQuestion(
     sessionId: string,
     question: { question: string; options: string[] }
-  ): Promise<string> {
-    const session = this.managedSessions.get(sessionId);
-    if (!session) {
-      // No session found, return first option as default
-      return question.options[0] || 'OK';
-    }
+  ): void {
+    void this.askParticipants(sessionId, question).catch((err) => {
+      logger.error({ err, sessionId }, 'Error handling agent question');
+    });
+  }
 
-    // Store in session that we're waiting for user input
+  private async askParticipants(
+    sessionId: string,
+    question: { question: string; options: string[] }
+  ): Promise<void> {
+    const session = this.managedSessions.get(sessionId);
+    if (!session) return;
+
     session.activity = 'waiting_user';
     await this.eventBus.emit({
       type: 'session_updated',
       session: this.toPublicSession(session),
     });
 
-    // Get all participants for this session
-    const participants = await this.participants.listBySession(sessionId);
+    const participants = this.participants.listBySession(sessionId);
+    let applied = false;
 
-    // Ask question on all channels with FULL CONTEXT
-    // This is the fix - we pass the complete question text, not just "OK"
-    const answerPromises: Promise<string>[] = [];
-
-    for (const participant of participants) {
+    const waits = participants.map(async (participant) => {
       const channel = this.registry.get(participant.channel);
-      if (!channel) continue;
+      if (!channel) return;
 
-      // Create proper question text with context
-      const fullQuestionText = question.question;
-
-      // Ask the question - this will show the full question text to users
-      const answerPromise = channel.askQuestion(
-        participant.conversationId,
-        fullQuestionText,
-        question.options,
-        { sessionId, conversationId: participant.conversationId }
-      );
-
-      answerPromises.push(answerPromise);
-    }
-
-    // Wait for first answer (first-answer-wins strategy)
-    if (answerPromises.length > 0) {
+      let answer = '';
       try {
-        const answers = await Promise.allSettled(answerPromises);
-
-        // Find first successful answer
-        for (const result of answers) {
-          if (result.status === 'fulfilled' && result.value) {
-            // Broadcast the answer to all participants
-            for (const participant of participants) {
-              const channel = this.registry.get(participant.channel);
-              if (channel) {
-                await channel.sendMessage(
-                  participant.conversationId,
-                  `✅ Answered: ${result.value}`
-                );
-              }
-            }
-
-            // Update session back to running
-            session.activity = 'running';
-            await this.eventBus.emit({
-              type: 'session_updated',
-              session: this.toPublicSession(session),
-            });
-
-            return result.value;
-          }
-        }
+        answer = await channel.askQuestion(
+          participant.conversationId,
+          question.question,
+          question.options,
+          { sessionId, conversationId: participant.conversationId }
+        );
       } catch (err) {
-        logger.error({ err, sessionId }, 'Error handling agent question');
+        logger.warn({ err, sessionId, channel: participant.channel }, 'askQuestion failed');
+        return;
       }
+
+      if (applied || !answer.trim()) return;
+      applied = true;
+      session.activity = 'running';
+      await this.eventBus.emit({
+        type: 'session_updated',
+        session: this.toPublicSession(session),
+      });
+      await this.applyUserInput(sessionId, answer, participant.channel, participant.conversationId);
+    });
+
+    await Promise.all(waits);
+  }
+
+  private async applyUserInput(
+    sessionId: string,
+    answer: string,
+    channel: string,
+    conversationId: string
+  ): Promise<void> {
+    const outcome = await this.agentService.submitUserInput(sessionId, answer);
+    if (outcome === 'send-now') {
+      await this.sendSessionMessage(sessionId, answer, channel, conversationId);
+      return;
     }
 
-    // Fallback: return first option
-    session.activity = 'running';
-    return question.options[0] || 'OK';
+    this.participants.ensure({
+      sessionId,
+      channel,
+      conversationId,
+      joinedAt: new Date().toISOString(),
+    });
+    this.messages.insert(sessionId, 'user', answer);
+    this.sessions.touch(sessionId);
   }
 
   private async handleStreamChunk(sessionId: string, text: string): Promise<void> {
@@ -178,6 +208,47 @@ export class SessionManager {
     this.sessions.touch(sessionId);
   }
 
+  private async publishProgress(
+    sessionId: string,
+    chunk: { text: string; type: 'text' | 'tool' | 'error' | 'thinking' | 'status' }
+  ): Promise<void> {
+    const session = this.managedSessions.get(sessionId);
+    if (!session) return;
+
+    const preview = session.outputPreview.trim();
+    let line = '';
+    if (chunk.type === 'text') {
+      line = preview;
+    } else if (!preview && chunk.text.trim()) {
+      line = chunk.type === 'tool' ? `⏳ Using ${chunk.text}…` : `⏳ ${chunk.text}`;
+    }
+    if (!line) return;
+
+    const participants = this.participants.listBySession(sessionId);
+    for (const participant of participants) {
+      if (participant.channel === 'web') continue;
+      const channel = this.registry.get(participant.channel);
+      if (!channel?.updateProgress) continue;
+      try {
+        await channel.updateProgress(participant.conversationId, line);
+      } catch (err) {
+        logger.warn(
+          { err, sessionId, channel: participant.channel },
+          'Failed to publish run progress'
+        );
+      }
+    }
+  }
+
+  private terminalText(result: AgentRunResult): string {
+    const text = result.text.trim();
+    if (result.success) {
+      return text || 'The agent finished without a text reply.';
+    }
+    const error = result.error?.trim() || 'The agent stopped without a text reply.';
+    return text ? `${text}\n\n${error}` : error;
+  }
+
   /**
    * Send assistant output to non-web participants (Telegram, etc.).
    * Web clients receive real-time chunks via agent_stream on the event bus.
@@ -187,15 +258,19 @@ export class SessionManager {
     if (!trimmed) return;
 
     const participants = this.participants.listBySession(sessionId);
+    const failures: unknown[] = [];
+
     for (const participant of participants) {
       if (participant.channel === 'web') continue;
 
       const channel = this.registry.get(participant.channel);
       if (!channel) {
+        const err = new Error(`No channel registered for ${participant.channel}`);
         logger.warn(
           { sessionId, channel: participant.channel },
           'No channel registered for participant delivery'
         );
+        failures.push(err);
         continue;
       }
 
@@ -215,7 +290,13 @@ export class SessionManager {
           { err, sessionId, channel: participant.channel, conversationId: participant.conversationId },
           'Failed to deliver assistant response to participant'
         );
+        failures.push(err);
       }
+    }
+
+    if (failures.length > 0) {
+      const first = failures[0];
+      throw first instanceof Error ? first : new Error(String(first));
     }
   }
 
@@ -405,41 +486,38 @@ export class SessionManager {
         session: this.toPublicSession(session),
       });
 
+      let summary = '';
       try {
         const result = await this.agentService.sendPrompt(sessionId, text);
+        summary = this.terminalText(result);
 
-        if (result.success) {
-          const streamed = session.outputPreview.trim();
-          const resultText = result.text.trim();
-          const summary = streamed || resultText;
-
-          if (summary) {
-            this.messages.insert(sessionId, 'assistant', summary.slice(0, 20000));
-          }
-          session.errorMessage = null;
-
-          // Non-web channels do not receive agent_stream — deliver the full reply here.
-          if (summary) {
-            await this.deliverToParticipants(sessionId, summary);
-          }
-        } else {
+        if (result.status === 'error' || result.status === 'cancelled') {
           session.errorMessage = result.error ?? null;
           session.activity = 'error';
-          logger.warn({ sessionId, error: result.error }, 'Agent returned error');
-          if (result.error) {
-            await this.deliverToParticipants(sessionId, `Agent error: ${result.error}`);
-          }
+          logger.warn({ sessionId, error: result.error, status: result.status }, 'Agent run did not finish cleanly');
+        } else {
+          session.errorMessage = null;
+        }
+
+        if (summary) {
+          this.messages.insert(sessionId, 'assistant', summary.slice(0, 20000));
+          await this.deliverToParticipants(sessionId, summary);
         }
       } catch (err) {
-        session.errorMessage = err instanceof Error ? err.message : String(err);
+        const message = err instanceof Error ? err.message : String(err);
+        session.errorMessage = message;
         session.activity = 'error';
         logger.error({ err, sessionId }, 'sendSessionMessage failed');
-        await this.deliverToParticipants(
-          sessionId,
-          `Agent error: ${session.errorMessage}`
-        );
+        if (!summary) summary = `Agent error: ${message}`;
+        try {
+          await this.deliverToParticipants(sessionId, summary);
+        } catch (deliverErr) {
+          logger.error({ err: deliverErr, sessionId }, 'Failed to deliver agent error');
+          throw err;
+        }
       } finally {
-        if (session.activity === 'running') {
+        // `waiting_user` can be set from the question callback while this send is in flight.
+        if (session.activity !== 'error') {
           session.activity = 'idle';
         }
       }

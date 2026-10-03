@@ -16,6 +16,12 @@ export interface Channel {
   sendMessage(conversationId: string, text: string): Promise<void>;
 
   /**
+   * Update an in-progress reply (Telegram status message). Optional.
+   * Web clients already receive agent_stream events.
+   */
+  updateProgress?(conversationId: string, text: string): Promise<void>;
+
+  /**
    * Ask a question and wait for answer
    * @returns The selected option or typed answer
    */
