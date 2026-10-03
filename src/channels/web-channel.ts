@@ -54,8 +54,9 @@ export class WebChannel implements Channel {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingQuestions.delete(key);
-        resolve(options[0] ?? '');
-      }, 3600000); // 1 hour timeout
+        // Don't invent an answer. A fake "Continue" starts another agent turn.
+        resolve('');
+      }, 30 * 60 * 1000);
 
       this.pendingQuestions.set(key, {
         resolve: (answer: string) => {

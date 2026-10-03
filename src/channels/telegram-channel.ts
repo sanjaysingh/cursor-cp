@@ -9,7 +9,7 @@ import type { MessageTarget, AppConfig } from '../models/types.js';
 import type { SessionManager } from '../core/session-manager.js';
 import { listLocalWorkspaceItems } from '../core/repo-picker.js';
 import { splitPlainText, markdownToTelegram, markdownToTelegramHtml } from '../format/telegram-format.js';
-import { createHash } from 'crypto';
+import { randomBytes } from 'crypto';
 import { logger } from '../util/logger.js';
 import { getVersion } from '../cli/help.js';
 import {
@@ -23,6 +23,17 @@ interface PendingQuestion {
   resolve: (answer: string) => void;
   options: string[];
   sessionId: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface StatusMessage {
+  chatId: string;
+  messageId: number;
+  mode: 'status' | 'text';
+  lastEdit: number;
+  startedAt: number;
+  pendingText?: string;
+  timer: ReturnType<typeof setInterval>;
 }
 
 export class TelegramChannel implements Channel {
@@ -44,6 +55,11 @@ export class TelegramChannel implements Channel {
 
   // Track active sessions per chat
   private activeSessions: Map<string, string> = new Map();
+  /** In-progress Telegram messages, keyed by `${chatId}:${messageId}`. */
+  private statusMessages = new Map<string, StatusMessage>();
+  /** The status message that live run progress and the final reply edit. */
+  private runStatusKey = new Map<string, string>();
+  private progressTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     token: string,
@@ -397,7 +413,27 @@ export class TelegramChannel implements Channel {
       await ctx.reply(`✅ Created session for ${name}. Send me text to start!`);
     });
 
-    // Ack quickly; run agent work in background so Telegraf handlerTimeout is not hit.
+    this.bot.action(/q:([a-f0-9]+):(\d+)/, async (ctx) => {
+      const token = ctx.match[1];
+      const index = parseInt(ctx.match[2], 10);
+      const pending = this.pendingQuestions.get(token);
+      if (!pending) {
+        await ctx.answerCbQuery('This question expired');
+        return;
+      }
+
+      clearTimeout(pending.timer);
+      const selected = pending.options[index] || '';
+      this.pendingQuestions.delete(token);
+      pending.resolve(selected);
+      await ctx.answerCbQuery();
+      if (selected) {
+        await ctx.reply(`✅ Selected: ${selected}`);
+      }
+    });
+
+    // Ack immediately, then keep that message updated for the life of the run.
+    // The handler returns so Telegraf's handlerTimeout cannot abandon the reply.
     this.bot.on(
       'text',
       wrapTelegramHandler('text', async (ctx) => {
@@ -411,19 +447,16 @@ export class TelegramChannel implements Channel {
         if (text.startsWith('/')) return;
 
         logger.info({ chatId, textLength: text.length }, 'Telegram text message received');
-
-        const sessionId = await this.resolveOrCreateSession(chatId, ctx);
-        await ctx.sendChatAction('typing');
-        await ctx.reply('⏳ Processing…');
-        void this.processSessionMessage(sessionId, text, chatId);
+        const ackId = await this.postStatus(ctx, '⏳ Processing…');
+        void this.finishIncomingText(ctx, ackId, text).catch((err) => {
+          logger.error({ err, chatId }, 'Telegram text handling failed');
+          void this.settleStatus(chatId, ackId, `❌ ${formatTelegramError(err)}`);
+        });
       })
     );
   }
 
-  private async resolveOrCreateSession(
-    chatId: string,
-    ctx: Context<Update>
-  ): Promise<string> {
+  private async resolveOrCreateSession(chatId: string): Promise<string> {
     let sessionId = this.activeSessions.get(chatId);
 
     if (!sessionId) {
@@ -444,25 +477,167 @@ export class TelegramChannel implements Channel {
         sessionId = session.id;
         this.activeSessions.set(chatId, sessionId);
         logger.info({ chatId, sessionId }, 'Created new Telegram session');
-        await ctx.reply('✅ Created new session. Processing your message…');
       }
     }
 
     return sessionId;
   }
 
-  private async processSessionMessage(
-    sessionId: string,
-    text: string,
-    chatId: string
-  ): Promise<void> {
+  private async finishIncomingText(ctx: Context<Update>, ackId: number, text: string): Promise<void> {
+    const chatId = String(ctx.chat?.id);
+    const ackKey = this.statusKey(chatId, ackId);
+
     try {
+      const sessionId = await this.resolveOrCreateSession(chatId);
+
+      if (this.sessionManager.hasActiveRun(sessionId)) {
+        const steered = await this.sessionManager.offerToActiveRun(sessionId, text, 'telegram', chatId);
+        if (steered) {
+          await this.settleStatus(chatId, ackId, '✅ Added to the current run.');
+          return;
+        }
+        await this.editStatusText(ackKey, '⏳ Waiting for the current run to finish…');
+      } else if (!this.runStatusKey.has(chatId)) {
+        this.runStatusKey.set(chatId, ackKey);
+      } else {
+        await this.editStatusText(ackKey, '⏳ Waiting for the current run to finish…');
+      }
+
       await this.sessionManager.sendSessionMessage(sessionId, text, 'telegram', chatId);
       logger.info({ chatId, sessionId }, 'Telegram message dispatched to agent');
+
+      if (!this.statusMessages.has(ackKey)) return;
+      if (this.runStatusKey.get(chatId) === ackKey) {
+        await this.settleStatus(chatId, ackId, 'The agent finished without a text reply.');
+        return;
+      }
+      await this.discardStatus(chatId, ackId);
     } catch (err) {
-      logger.error({ err, chatId, sessionId }, 'Telegram session message failed');
-      await this.sendMessage(chatId, `❌ ${formatTelegramError(err)}`);
+      logger.error({ err, chatId }, 'Telegram session message failed');
+      try {
+        await this.settleStatus(chatId, ackId, `❌ ${formatTelegramError(err)}`);
+      } catch (settleErr) {
+        logger.error({ err: settleErr, chatId }, 'Failed to update Telegram status message');
+      }
     }
+  }
+
+  private statusKey(chatId: string, messageId: number): string {
+    return `${chatId}:${messageId}`;
+  }
+
+  private async postStatus(ctx: Context<Update>, text: string): Promise<number> {
+    const chatId = String(ctx.chat?.id);
+    await ctx.sendChatAction('typing');
+    const sent = await ctx.reply(text);
+    const key = this.statusKey(chatId, sent.message_id);
+    const status: StatusMessage = {
+      chatId,
+      messageId: sent.message_id,
+      mode: 'status',
+      lastEdit: Date.now(),
+      startedAt: Date.now(),
+      timer: setInterval(() => {
+        void this.heartbeatStatus(key);
+      }, 20_000),
+    };
+    this.statusMessages.set(key, status);
+    return sent.message_id;
+  }
+
+  private async heartbeatStatus(key: string): Promise<void> {
+    const status = this.statusMessages.get(key);
+    if (!status || status.mode === 'text') return;
+    if (Date.now() - status.lastEdit < 15_000) return;
+
+    const elapsedSec = Math.max(1, Math.round((Date.now() - status.startedAt) / 1000));
+    await this.editStatusText(key, `⏳ Still working (${elapsedSec}s)…`);
+    try {
+      await this.bot.telegram.sendChatAction(status.chatId, 'typing');
+    } catch (err) {
+      logger.debug({ err, chatId: status.chatId }, 'Could not refresh Telegram typing action');
+    }
+  }
+
+  private async editStatusText(key: string, text: string): Promise<void> {
+    const status = this.statusMessages.get(key);
+    if (!status) return;
+    status.mode = text.startsWith('⏳') ? 'status' : 'text';
+    const edited = await this.editPlain(status.chatId, status.messageId, text);
+    if (edited) status.lastEdit = Date.now();
+  }
+
+  private async editPlain(chatId: string, messageId: number, text: string): Promise<boolean> {
+    try {
+      await this.bot.telegram.editMessageText(chatId, messageId, undefined, text.slice(0, 4096));
+      return true;
+    } catch (err) {
+      if (isHarmlessTelegramEditError(err)) return true;
+      logger.warn({ err, chatId, messageId }, 'Could not edit Telegram status message');
+      return false;
+    }
+  }
+
+  private clearStatus(key: string): void {
+    const status = this.statusMessages.get(key);
+    if (!status) return;
+    clearInterval(status.timer);
+    const pending = this.progressTimers.get(key);
+    if (pending) clearTimeout(pending);
+    this.progressTimers.delete(key);
+    this.statusMessages.delete(key);
+    if (this.runStatusKey.get(status.chatId) === key) {
+      this.runStatusKey.delete(status.chatId);
+    }
+  }
+
+  private async settleStatus(chatId: string, messageId: number, text: string): Promise<void> {
+    const key = this.statusKey(chatId, messageId);
+    this.clearStatus(key);
+    await this.deliverMarkdown(chatId, text, messageId);
+  }
+
+  private async discardStatus(chatId: string, messageId: number): Promise<void> {
+    const key = this.statusKey(chatId, messageId);
+    this.clearStatus(key);
+    try {
+      await this.bot.telegram.deleteMessage(chatId, messageId);
+    } catch (err) {
+      logger.warn({ err, chatId, messageId }, 'Could not delete Telegram status message');
+    }
+  }
+
+  async updateProgress(conversationId: string, text: string): Promise<void> {
+    const key = this.runStatusKey.get(conversationId);
+    if (!key) return;
+    const status = this.statusMessages.get(key);
+    if (!status) return;
+
+    const body = text.trim().slice(-3500);
+    if (!body) return;
+    status.pendingText = body;
+    status.mode = body.startsWith('⏳') ? 'status' : 'text';
+
+    const wait = 1500 - (Date.now() - status.lastEdit);
+    if (wait <= 0) {
+      await this.flushProgress(key);
+      return;
+    }
+
+    if (this.progressTimers.has(key)) return;
+    const timer = setTimeout(() => {
+      this.progressTimers.delete(key);
+      void this.flushProgress(key);
+    }, wait);
+    this.progressTimers.set(key, timer);
+  }
+
+  private async flushProgress(key: string): Promise<void> {
+    const status = this.statusMessages.get(key);
+    const pending = status?.pendingText;
+    if (!status || !pending) return;
+    status.pendingText = undefined;
+    await this.editStatusText(key, pending);
   }
 
   async start(): Promise<void> {
@@ -479,6 +654,9 @@ export class TelegramChannel implements Channel {
   }
 
   async stop(): Promise<void> {
+    for (const key of [...this.statusMessages.keys()]) {
+      this.clearStatus(key);
+    }
     this.bot.stop();
     logger.info('Telegram bot stopped');
   }
@@ -488,14 +666,48 @@ export class TelegramChannel implements Channel {
 
     logger.debug({ conversationId, textLength: text.length }, 'Sending Telegram message');
 
-    if (text.length <= 4096) {
-      await this.sendMarkdownMessage(conversationId, text);
+    const runKey = this.runStatusKey.get(conversationId);
+    const status = runKey ? this.statusMessages.get(runKey) : undefined;
+    if (runKey && status) {
+      this.clearStatus(runKey);
+      await this.deliverMarkdown(conversationId, text, status.messageId);
       return;
     }
 
-    for (const chunk of splitPlainText(text, 4096)) {
-      await this.sendMarkdownMessage(conversationId, chunk);
+    await this.deliverMarkdown(conversationId, text);
+  }
+
+  private async deliverMarkdown(chatId: string, markdown: string, messageId?: number): Promise<void> {
+    const chunks = splitPlainText(markdown, 4096);
+    let editId = messageId;
+
+    for (const chunk of chunks) {
+      if (editId !== undefined) {
+        const edited = await this.editMarkdown(chatId, editId, chunk);
+        if (!edited) {
+          await this.sendMarkdownMessage(chatId, chunk);
+        }
+        editId = undefined;
+        continue;
+      }
+      await this.sendMarkdownMessage(chatId, chunk);
     }
+  }
+
+  private async editMarkdown(chatId: string, messageId: number, markdown: string): Promise<boolean> {
+    const html = markdownToTelegramHtml(markdown);
+    if (html) {
+      try {
+        await this.bot.telegram.editMessageText(chatId, messageId, undefined, html, { parse_mode: 'HTML' });
+        return true;
+      } catch (err) {
+        if (isHarmlessTelegramEditError(err)) return true;
+        logger.warn({ err, chatId, messageId }, 'Telegram rejected HTML edit, trying plain');
+      }
+    }
+
+    const plain = markdownToTelegram(markdown);
+    return this.editPlain(chatId, messageId, plain.text);
   }
 
   /** Send markdown with HTML formatting (matches web bold/italic); plain text on failure. */
@@ -551,53 +763,40 @@ export class TelegramChannel implements Channel {
     options: string[],
     target: MessageTarget
   ): Promise<string> {
-    const token = this.createQuestionToken(target.sessionId, conversationId);
-
+    const token = randomBytes(8).toString('hex');
     const buttons = options.map((opt, i) => {
-      return [Markup.button.callback(opt, `q:${token}:${i}`)];
+      return [Markup.button.callback(opt.slice(0, 60), `q:${token}:${i}`)];
     });
 
-    await this.sendFormattedWithKeyboard(
-      conversationId,
-      question,
-      Markup.inlineKeyboard(buttons)
-    );
-
     return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (!this.pendingQuestions.has(token)) return;
+        this.pendingQuestions.delete(token);
+        resolve('');
+      }, 30 * 60 * 1000);
+
       this.pendingQuestions.set(token, {
         resolve,
         options,
         sessionId: target.sessionId,
+        timer,
       });
 
-      // Set up one-time handler for this question
-      this.bot.action(new RegExp(`q:${token}:(\\d+)`), async (ctx) => {
-        const index = parseInt(ctx.match[1], 10);
-        const pending = this.pendingQuestions.get(token);
-
-        if (pending) {
-          pending.resolve(pending.options[index] || '');
-          this.pendingQuestions.delete(token);
-          await ctx.answerCbQuery();
-          await ctx.reply(`✅ Selected: ${pending.options[index]}`);
-        }
+      void this.sendFormattedWithKeyboard(
+        conversationId,
+        question,
+        Markup.inlineKeyboard(buttons)
+      ).catch((err) => {
+        logger.error({ err, conversationId }, 'Failed to send Telegram question');
+        clearTimeout(timer);
+        this.pendingQuestions.delete(token);
+        resolve('');
       });
-
-      // Timeout after 1 hour
-      setTimeout(() => {
-        const pending = this.pendingQuestions.get(token);
-        if (pending) {
-          pending.resolve(pending.options[0] || '');
-          this.pendingQuestions.delete(token);
-        }
-      }, 3600000);
     });
   }
+}
 
-  private createQuestionToken(sessionId: string, conversationId: string): string {
-    return createHash('sha256')
-      .update(`${sessionId}:${conversationId}`)
-      .digest('hex')
-      .slice(0, 12);
-  }
+function isHarmlessTelegramEditError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes('message is not modified');
 }

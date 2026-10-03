@@ -293,6 +293,133 @@ describe('AgentService', () => {
     expect(service).toBeDefined();
   });
 
+  it('should surface run errors from result.error', async () => {
+    mockAgent.send.mockResolvedValue({
+      id: 'run-err',
+      requestId: 'req-err',
+      async *stream() {
+        yield* [];
+      },
+      wait: vi.fn().mockResolvedValue({
+        id: 'run-err',
+        status: 'error',
+        error: { message: 'sandbox denied the command' },
+      }),
+    });
+
+    await service.createSession('test-id', '/tmp/workspace');
+    const result = await service.sendPrompt('test-id', 'Do the thing');
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('sandbox denied the command');
+  });
+
+  it('should not block the stream while a request is unanswered', async () => {
+    let releaseQuestion: (() => void) | undefined;
+    const question = new Promise<void>((resolve) => {
+      releaseQuestion = resolve;
+    });
+    const onQuestion = vi.fn(() => question);
+
+    mockAgent.send.mockResolvedValue({
+      id: 'run-req',
+      async *stream() {
+        yield {
+          type: 'request',
+          agent_id: 'agent-test-id',
+          run_id: 'run-req',
+          request_id: 'req-1',
+        };
+        yield {
+          type: 'assistant',
+          agent_id: 'agent-test-id',
+          run_id: 'run-req',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'Done' }] },
+        };
+      },
+      wait: vi.fn().mockResolvedValue({
+        id: 'run-req',
+        status: 'finished',
+        result: 'Done',
+      }),
+    });
+
+    service.onQuestion(onQuestion);
+    await service.createSession('test-id', '/tmp/workspace');
+    const result = await service.sendPrompt('test-id', 'Hi');
+
+    expect(onQuestion).toHaveBeenCalledWith(
+      'test-id',
+      expect.objectContaining({ requestId: 'req-1' })
+    );
+    expect(result.success).toBe(true);
+    expect(result.text).toBe('Done');
+    releaseQuestion?.();
+  });
+
+  it('should cancel a run that never streams and still return', async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const stalled = new AgentService({
+      apiKey: 'test-key',
+      defaultModel: 'composer-2',
+      timeouts: { initialStallMs: 30, waitGraceMs: 30, maxRunMs: 5_000, sdkCallMs: 1_000 },
+    });
+
+    mockAgent.send.mockResolvedValue({
+      id: 'run-hang',
+      supports: () => true,
+      cancel,
+      async *stream() {
+        await new Promise(() => {});
+        yield* [];
+      },
+      wait: () => new Promise(() => {}),
+    });
+
+    await stalled.createSession('test-id', '/tmp/workspace');
+    const result = await stalled.sendPrompt('test-id', 'Hi');
+
+    expect(cancel).toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(result.status).toBe('cancelled');
+    expect(result.error).toMatch(/cancelled/i);
+  });
+
+  it('should steer text into the active run', async () => {
+    let releaseStream: (() => void) | undefined;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    const steer = vi.fn().mockResolvedValue('complete_delivered');
+
+    mockAgent.send.mockResolvedValue({
+      id: 'run-steer',
+      steer,
+      async *stream() {
+        await streamGate;
+        yield* [];
+      },
+      wait: vi.fn().mockResolvedValue({
+        id: 'run-steer',
+        status: 'finished',
+        result: 'ok',
+      }),
+    });
+
+    await service.createSession('test-id', '/tmp/workspace');
+    const pending = service.sendPrompt('test-id', 'Hi');
+    await vi.waitFor(() => expect(service.hasActiveRun('test-id')).toBe(true));
+
+    await expect(service.steerActiveRun('test-id', 'skip that')).resolves.toBe(true);
+    expect(steer).toHaveBeenCalledWith('skip that');
+
+    releaseStream?.();
+    const result = await pending;
+    expect(result.success).toBe(true);
+    expect(result.text).toBe('ok');
+  });
+
   it('should list models via Cursor.models.list', async () => {
     const models = await service.listAvailableModels();
 
