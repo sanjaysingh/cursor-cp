@@ -88,15 +88,25 @@ curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.
 On an interactive terminal the installer prints next steps; run `cursor-cp setup`
 to configure your API key, model, port, and optional Telegram bot.
 
-Pass options through the pipe with `bash -s --`:
+That command tracks `main`. To install a specific release, pass the tag through
+`bash -s --`. `-s` makes bash read the script from the pipe, and `--` sends the
+following words to `install.sh` instead of to bash:
 
 ```bash
-# Install a specific tag/branch, or to a custom directory
 curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh \
-  | bash -s -- --version v0.2.5 --dir "$HOME/apps/cursor-cp"
+  | bash -s -- --version v0.4.3
 ```
 
-You can also download and run it directly (`bash install.sh [options]`).
+`--version` accepts any git tag or branch. The same flags work on an existing
+install: the script checks out that ref, reinstalls dependencies, and rebuilds.
+A custom directory is optional:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sanjaysingh/cursor-cp/main/install.sh \
+  | bash -s -- --version v0.4.3 --dir "$HOME/apps/cursor-cp"
+```
+
+You can also download and run it directly (`bash install.sh --version v0.4.3`).
 
 | Flag | Environment variable | Default | Description |
 |------|----------------------|---------|-------------|
